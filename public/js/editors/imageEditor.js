@@ -656,8 +656,6 @@ export class ImageEditor {
     pasteCanvas.height = this.clipboard.height;
     pasteCanvas.getContext('2d').putImageData(this.clipboard, 0, 0);
     pasteCanvas.className = 'paste-canvas-layer';
-    pasteCanvas.style.left = `${pasteX}px`;
-    pasteCanvas.style.top = `${pasteY}px`;
 
     const wrapper = document.createElement('div');
     wrapper.className = 'paste-layer-wrapper';
@@ -678,6 +676,7 @@ export class ImageEditor {
     actionsDiv.style.padding = '2px 6px';
     actionsDiv.style.borderRadius = '4px';
     actionsDiv.style.border = '1px solid #313244';
+    actionsDiv.style.zIndex = '20';
     actionsDiv.innerHTML = `
       <button class="btn btn-sm btn-success" id="pasteCommitBtn" style="padding: 2px 6px; font-size: 11px;">✓ Apply</button>
       <button class="btn btn-sm btn-danger" id="pasteDiscardBtn" style="padding: 2px 6px; font-size: 11px;">✕ Discard</button>
