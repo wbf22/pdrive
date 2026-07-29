@@ -80,8 +80,8 @@ export async function readFile(path) {
   return apiPost('/api/files/read', { path })
 }
 
-export async function writeFile(path, content) {
-  return apiPost('/api/files/write', { path, content })
+export async function writeFile(path, content, encoding) {
+  return apiPost('/api/files/write', { path, content, encoding })
 }
 
 export async function createFolder(path) {

@@ -540,6 +540,88 @@ body {
   border-radius: 4px;
 }
 
+/* Image Editor */
+.image-editor-wrapper {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background-color: var(--bg-dark);
+}
+
+.image-editor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 16px;
+  background-color: var(--bg-card);
+  border-bottom: 1px solid var(--border-color);
+  z-index: 20;
+}
+
+.editor-tools-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.editor-tools-group .btn.active {
+  background-color: var(--primary);
+  color: #000;
+  border-color: var(--primary);
+  font-weight: bold;
+}
+
+.image-editor-viewport {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  background-color: #11111b;
+  cursor: default;
+  user-select: none;
+  touch-action: none;
+}
+
+.canvas-container {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.7);
+}
+
+.canvas-container canvas {
+  display: block;
+}
+
+.selection-box {
+  position: absolute;
+  border: 2px dashed #00d2ff;
+  background: rgba(0, 210, 255, 0.15);
+  pointer-events: none;
+  z-index: 5;
+}
+
+.paste-canvas-layer {
+  position: absolute;
+  border: 1px dashed #a6e3a1;
+  cursor: move;
+  z-index: 10;
+  box-shadow: 0 0 10px rgba(0,0,0,0.5);
+}
+
+.color-picker-input {
+  width: 32px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
 /* Modals & Overlays */
 .modal-overlay {
   position: fixed;

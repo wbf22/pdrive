@@ -1,17 +1,24 @@
 /**
  * Image Viewer Component
  */
+import { ImageEditor } from './imageEditor.js';
 
 export class ImageViewer {
-  constructor(container) {
+  constructor(container, onSave) {
     this.container = container;
+    this.onSave = onSave;
     this.zoomLevel = 100;
     this.rotation = 0;
+    this.currentEditor = null;
   }
 
   render(base64Data, mimeType, fileName) {
+    this.base64Data = base64Data;
+    this.mimeType = mimeType;
+    this.fileName = fileName;
     this.zoomLevel = 100;
     this.rotation = 0;
+    this.currentEditor = null;
     const imgSrc = `data:${mimeType};base64,${base64Data}`;
 
     this.container.innerHTML = `
@@ -19,6 +26,8 @@ export class ImageViewer {
         <div class="image-toolbar">
           <div class="image-title">${this.escapeHTML(fileName)}</div>
           <div class="image-controls">
+            <button class="btn btn-sm btn-primary" id="imgEditBtn">✏️ Edit</button>
+            <span class="toolbar-divider" style="display:inline-block;width:1px;height:16px;background:var(--border-color);margin:0 4px;"></span>
             <button class="btn btn-sm" id="imgZoomOut">-</button>
             <span class="zoom-label" id="zoomLabel">100%</span>
             <button class="btn btn-sm" id="imgZoomIn">+</button>
@@ -34,6 +43,10 @@ export class ImageViewer {
 
     this.imgEl = this.container.querySelector('#viewImage');
     this.zoomLabel = this.container.querySelector('#zoomLabel');
+
+    this.container.querySelector('#imgEditBtn').addEventListener('click', () => {
+      this.openEditor();
+    });
 
     this.container.querySelector('#imgZoomIn').addEventListener('click', () => {
       this.zoomLevel = Math.min(300, this.zoomLevel + 20);
@@ -55,6 +68,30 @@ export class ImageViewer {
       this.rotation = (this.rotation + 90) % 360;
       this.applyTransform();
     });
+  }
+
+  openEditor() {
+    this.currentEditor = new ImageEditor(this.container, {
+      onSave: (newBase64) => {
+        this.base64Data = newBase64;
+        if (this.onSave) {
+          this.onSave(newBase64, 'base64');
+        }
+      },
+      onClose: () => {
+        this.currentEditor = null;
+        this.render(this.base64Data, this.mimeType, this.fileName);
+      }
+    });
+    this.currentEditor.render(this.base64Data, this.mimeType, this.fileName);
+  }
+
+  save() {
+    if (this.currentEditor && typeof this.currentEditor.save === 'function') {
+      this.currentEditor.save();
+    } else if (this.onSave) {
+      this.onSave(this.base64Data, 'base64');
+    }
   }
 
   applyTransform() {

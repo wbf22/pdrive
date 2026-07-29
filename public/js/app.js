@@ -574,8 +574,9 @@ class PDriveApp {
       const content = fileData.content
 
       if (fileData.type === 'image') {
-        const viewer = new ImageViewer(this.editorContainer)
+        const viewer = new ImageViewer(this.editorContainer, (base64Data, encoding) => this.saveFile(base64Data, encoding || 'base64'))
         viewer.render(content, fileData.mime, filePath.split('/').pop())
+        this.activeEditor = viewer
       } else if (ext === 'csv') {
         const csvEd = new CSVEditor(this.editorContainer, csv => this.saveFile(csv))
         csvEd.render(content)
@@ -594,11 +595,11 @@ class PDriveApp {
     }
   }
 
-  async saveFile(content) {
+  async saveFile(content, encoding) {
     if (!this.activeFilePath) return
     if (this.isOnline) {
       try {
-        await api.writeFile(this.activeFilePath, content)
+        await api.writeFile(this.activeFilePath, content, encoding)
         // Update offline cache if this file is marked
         if (await db.isMarkedOffline(this.activeFilePath)) {
           const cached = await db.getCachedFile(this.activeFilePath)
@@ -618,7 +619,7 @@ class PDriveApp {
       // Offline save — queue pending update
       try {
         await db.updateCachedContent(this.activeFilePath, content)
-        await db.addPendingAction({ type: 'update', path: this.activeFilePath, content })
+        await db.addPendingAction({ type: 'update', path: this.activeFilePath, content, encoding })
         this.showToast('Saved offline (will sync when connected)')
         this.loadOfflineTree()
       } catch (err) {
@@ -952,7 +953,7 @@ class PDriveApp {
                 if (resolution === 'keep') {
                   // Save as copy
                   const conflictedPath = action.path.replace(/(\.\w+)?$/, '.conflicted$1')
-                  await api.writeFile(conflictedPath, action.content)
+                  await api.writeFile(conflictedPath, action.content, action.encoding)
                   this.showToast(`Saved as ${conflictedPath}`)
                 }
                 // If 'accept', just update local cache with server version
@@ -969,7 +970,7 @@ class PDriveApp {
               // Server file doesn't exist or error — still try to write
             }
           }
-          await api.writeFile(action.path, action.content || '')
+          await api.writeFile(action.path, action.content || '', action.encoding)
         } else if (action.type === 'delete') {
           try {
             // Check if server has modifications

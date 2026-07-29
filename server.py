@@ -433,12 +433,25 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
         body = self._parse_json_body()
         file_path = body.get("path", "")
         content = body.get("content", "")
+        encoding = body.get("encoding", "")
         if not file_path:
             return self._send_error(400, "Path required")
         abs_path = safe_path(file_path)
         os.makedirs(os.path.dirname(abs_path), exist_ok=True)
-        with open(abs_path, "w", encoding="utf-8") as f:
-            f.write(content)
+        file_type, _ = guess_type(abs_path)
+        if encoding == "base64" or file_type in ("image", "binary"):
+            try:
+                if isinstance(content, str) and "," in content and content.startswith("data:"):
+                    content = content.split(",", 1)[1]
+                raw = base64.b64decode(content)
+                with open(abs_path, "wb") as f:
+                    f.write(raw)
+            except Exception:
+                with open(abs_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+        else:
+            with open(abs_path, "w", encoding="utf-8") as f:
+                f.write(content)
         self._send_json(200, {"success": True, "path": file_path})
 
     def _handle_mkdir(self):
