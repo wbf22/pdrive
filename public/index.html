@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>PDrive</title>
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#1e1e2e">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- Login Modal -->
+  <div class="modal-overlay hidden" id="loginModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>🔐 PDrive Login</h3>
+      </div>
+      <div class="modal-body">
+        <p>Enter the server password to unlock.</p>
+        <div class="input-group">
+          <input type="password" id="loginInput" placeholder="Server password" maxlength="128" />
+        </div>
+        <div class="error-msg hidden" id="loginError">Invalid password</div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="loginSubmit">Unlock</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Server Settings Modal -->
+  <div class="modal-overlay hidden" id="serverModal">
+    <div class="modal-card large">
+      <div class="modal-header">
+        <h3>⚙️ Server Settings</h3>
+        <button class="close-btn" id="closeServerModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="input-group">
+          <label>PDrive Backend URL</label>
+          <input type="text" id="serverUrlInput" placeholder="http://192.168.1.100:8080" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="serverSubmit">Connect</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Action Modal (New File, New Folder, Move) -->
+  <div class="modal-overlay hidden" id="actionModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="actionModalTitle">Action</h3>
+        <button class="close-btn" id="closeActionModal">&times;</button>
+      </div>
+      <div class="modal-body" id="actionModalBody"></div>
+      <div class="modal-footer" id="actionModalFooter"></div>
+    </div>
+  </div>
+
+  <!-- Prompt Modal -->
+  <div class="modal-overlay hidden" id="promptModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="promptModalTitle">Enter Name</h3>
+      </div>
+      <div class="modal-body">
+        <div class="input-group">
+          <input type="text" id="promptInput" class="form-input" placeholder="..." />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" id="promptCancel">Cancel</button>
+        <button class="btn btn-primary" id="promptOk">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirm Modal -->
+  <div class="modal-overlay hidden" id="confirmModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="confirmTitle">Confirm</h3>
+      </div>
+      <div class="modal-body">
+        <p id="confirmMsg">Are you sure?</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" id="confirmCancel">Cancel</button>
+        <button class="btn btn-danger" id="confirmOk">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main App Layout -->
+  <div class="app-container">
+    <!-- Top Navigation Bar -->
+    <header class="app-navbar">
+      <div class="nav-left">
+        <button class="icon-btn mobile-menu-toggle" id="toggleMobileDrawer" title="Toggle File Tree">☰</button>
+        <div class="brand">
+          <span class="brand-logo">☁️</span>
+          <span class="brand-title">PDrive</span>
+        </div>
+      </div>
+
+      <div class="nav-center">
+        <button class="btn btn-sm btn-outline" id="openServerSettingsBtn">⚙️ Server</button>
+      </div>
+
+      <div class="nav-right">
+        <button class="icon-btn" id="lockAppBtn" title="Lock (Logout)">🔒</button>
+      </div>
+    </header>
+
+    <div class="app-workspace">
+      <!-- Sidebar / File Tree -->
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+          <span class="sidebar-title">FILES</span>
+          <div class="sidebar-actions">
+            <button class="icon-btn" id="treeNewFileBtn" title="New File">📄+</button>
+            <button class="icon-btn" id="treeNewFolderBtn" title="New Folder">📁+</button>
+            <button class="icon-btn" id="treeUploadBtn" title="Upload File">⬆️</button>
+            <button class="icon-btn" id="treeRefreshBtn" title="Refresh">🔄</button>
+          </div>
+          <input type="file" id="hiddenFileInput" class="hidden" />
+        </div>
+        <div class="tree-container" id="treeContainer"></div>
+      </aside>
+
+      <!-- Main Editor Area -->
+      <main class="main-content">
+        <div class="content-header">
+          <div class="breadcrumb" id="breadcrumbPath">
+            <span class="crumb">Root</span>
+          </div>
+          <div class="file-actions" id="activeFileActions">
+            <button class="btn btn-sm btn-outline" id="fileMoveBtn" disabled>Move</button>
+            <button class="btn btn-sm btn-danger" id="fileDeleteBtn" disabled>Delete</button>
+          </div>
+        </div>
+
+        <div class="view-container" id="editorContainer">
+          <div class="welcome-screen">
+            <div class="welcome-card">
+              <h2>Welcome to PDrive</h2>
+              <p>A Google Drive-style file manager for your remote host.</p>
+              <div class="welcome-features">
+                <div class="feature-item">📊 CSV Editor with custom formulas</div>
+                <div class="feature-item">📝 Live Markdown Editor & Render</div>
+                <div class="feature-item">🖼️ Responsive Image Viewer</div>
+                <div class="feature-item">📁 Chunked uploads for large files</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- Context Menu -->
+  <div id="contextMenu" class="context-menu hidden">
+    <button class="ctx-item" data-action="open">📂 Open</button>
+    <button class="ctx-item" data-action="rename">✏️ Rename</button>
+    <button class="ctx-item ctx-item-danger" data-action="delete">🗑️ Delete</button>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast hidden" id="toast"></div>
+
+  <!-- Scripts -->
+  <script type="module" src="js/api.js"></script>
+  <script type="module" src="js/treeView.js"></script>
+  <script type="module" src="js/editors/textEditor.js"></script>
+  <script type="module" src="js/editors/imageViewer.js"></script>
+  <script type="module" src="js/editors/markdownEditor.js"></script>
+  <script type="module" src="js/editors/csvEditor.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

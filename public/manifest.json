@@ -1,0 +1,21 @@
+{
+  "short_name": "PDrive",
+  "name": "PDrive - Personal Cloud & SSH Explorer",
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#1e1e2e",
+  "theme_color": "#1e1e2e",
+  "display": "standalone",
+  "orientation": "any"
+}
