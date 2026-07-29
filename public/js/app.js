@@ -26,6 +26,7 @@ class PDriveApp {
     this.loginInput = document.getElementById('loginInput')
     this.loginSubmit = document.getElementById('loginSubmit')
     this.loginError = document.getElementById('loginError')
+    this.loginRemember = document.getElementById('loginRemember')
 
     this.serverModal = document.getElementById('serverModal')
     this.serverUrlInput = document.getElementById('serverUrlInput')
@@ -87,6 +88,9 @@ class PDriveApp {
     this.fileMoveBtn.addEventListener('click', () => this.showMoveModal())
     this.fileDeleteBtn.addEventListener('click', () => this.showDeleteModal())
     this.fileOfflineBtn.addEventListener('click', () => this.toggleActiveFileOffline())
+    document.getElementById('loginRemember').addEventListener('change', (e) => {
+      document.getElementById('pinFieldGroup').classList.toggle('hidden', !e.target.checked)
+    })
 
     this.contextMenu.querySelectorAll('.ctx-item').forEach(btn => {
       btn.addEventListener('click', e => {
@@ -265,24 +269,170 @@ class PDriveApp {
     }
   }
 
-  showLogin() {
-    this.loginInput.value = ''
-    this.loginError.classList.add('hidden')
-    this.loginModal.classList.remove('hidden')
-    this.loginInput.focus()
+  // ----- Password Save / Encrypt helpers ----------------------------
+  getSavedPassword() {
+    const key = 'pdrive_pass_' + api.getServerUrl()
+    const raw = localStorage.getItem(key)
+    if (!raw) return null
+    try {
+      const data = JSON.parse(raw)
+      if (data.pin) return { pin: true, data: data }
+      return { pin: false, data: atob(data) }
+    } catch {
+      // Legacy: raw base64 without JSON wrapper
+      return { pin: false, data: atob(raw) }
+    }
+  }
 
-    this.loginSubmit.onclick = async () => {
-      const pw = this.loginInput.value.trim()
-      if (!pw) return
-      try {
-        await api.login(pw)
-        this.loginModal.classList.add('hidden')
-        this.loadTree()
-      } catch (err) {
-        this.loginError.textContent = err.message || 'Login failed'
-        this.loginError.classList.remove('hidden')
+  clearSavedPassword() {
+    const key = 'pdrive_pass_' + api.getServerUrl()
+    localStorage.removeItem(key)
+  }
+
+  async savePassword(password, pin = null) {
+    const key = 'pdrive_pass_' + api.getServerUrl()
+    if (pin) {
+      const encrypted = await this.encryptWithPin(password, pin)
+      localStorage.setItem(key, JSON.stringify(encrypted))
+    } else {
+      localStorage.setItem(key, btoa(password))
+    }
+  }
+
+  async encryptWithPin(password, pin) {
+    const encoder = new TextEncoder()
+    const salt = crypto.getRandomValues(new Uint8Array(16))
+    const keyMaterial = await crypto.subtle.importKey(
+      'raw', encoder.encode(pin), 'PBKDF2', false, ['deriveKey']
+    )
+    const key = await crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+      keyMaterial,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt']
+    )
+    const iv = crypto.getRandomValues(new Uint8Array(12))
+    const ciphertext = await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv },
+      key,
+      encoder.encode(password)
+    )
+    return {
+      salt: Array.from(salt).map(b => b.toString(16).padStart(2, '0')).join(''),
+      iv: Array.from(iv).map(b => b.toString(16).padStart(2, '0')).join(''),
+      data: Array.from(new Uint8Array(ciphertext)).map(b => b.toString(16).padStart(2, '0')).join(''),
+    }
+  }
+
+  async decryptWithPin(encrypted, pin) {
+    const encoder = new TextEncoder()
+    const salt = new Uint8Array(encrypted.salt.match(/.{2}/g).map(b => parseInt(b, 16)))
+    const iv = new Uint8Array(encrypted.iv.match(/.{2}/g).map(b => parseInt(b, 16)))
+    const data = new Uint8Array(encrypted.data.match(/.{2}/g).map(b => parseInt(b, 16)))
+    const keyMaterial = await crypto.subtle.importKey(
+      'raw', encoder.encode(pin), 'PBKDF2', false, ['deriveKey']
+    )
+    const key = await crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+      keyMaterial,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['decrypt']
+    )
+    const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, data)
+    return new TextDecoder().decode(plaintext)
+  }
+
+  showLogin() {
+    const saved = this.getSavedPassword()
+    const pwForm = document.getElementById('loginPasswordForm')
+    const pinUnlock = document.getElementById('loginPinUnlock')
+
+    this.loginError.classList.add('hidden')
+
+    if (saved) {
+      // Saved password exists
+      if (saved.pin) {
+        // PIN-protected — show PIN unlock
+        pwForm.classList.add('hidden')
+        pinUnlock.classList.remove('hidden')
+        document.getElementById('loginPinUnlockInput').value = ''
+        document.getElementById('loginPinUnlockInput').focus()
+        this.loginModal.classList.remove('hidden')
+
+        this.loginSubmit.onclick = async () => {
+          const pin = document.getElementById('loginPinUnlockInput').value.trim()
+          if (!pin) return
+          try {
+            const password = await this.decryptWithPin(saved.data, pin)
+            await api.login(password)
+            this.loginModal.classList.add('hidden')
+            this.loadTree()
+          } catch (err) {
+            this.loginError.textContent = err.message || 'Wrong PIN or login failed'
+            this.loginError.classList.remove('hidden')
+          }
+        }
+        document.getElementById('loginForgetBtn').onclick = () => {
+          this.clearSavedPassword()
+          this.showLogin()
+        }
+        document.getElementById('loginPinUnlockInput').onkeydown = e => {
+          if (e.key === 'Enter') this.loginSubmit.click()
+        }
+      } else {
+        // No PIN — auto-fill and attempt login
+        pwForm.classList.remove('hidden')
+        pinUnlock.classList.add('hidden')
+        document.getElementById('loginInput').value = saved.data
+        document.getElementById('loginRemember').checked = true
+        document.getElementById('pinFieldGroup').classList.add('hidden')
+        this.loginModal.classList.remove('hidden')
+        this.loginSubmit.focus()
+
+        this.loginSubmit.onclick = async () => {
+          try {
+            await api.login(saved.data)
+            this.loginModal.classList.add('hidden')
+            this.loadTree()
+          } catch (err) {
+            // Saved password failed — show normal form
+            this.showLogin()
+            this.loginError.textContent = 'Saved password rejected — re-enter password'
+            this.loginError.classList.remove('hidden')
+          }
+        }
+      }
+    } else {
+      // No saved password — show normal form
+      pwForm.classList.remove('hidden')
+      pinUnlock.classList.add('hidden')
+      this.loginInput.value = ''
+      this.loginRemember.checked = false
+      document.getElementById('pinFieldGroup').classList.add('hidden')
+      this.loginModal.classList.remove('hidden')
+      this.loginInput.focus()
+
+      this.loginSubmit.onclick = async () => {
+        const pw = this.loginInput.value.trim()
+        if (!pw) return
+        try {
+          await api.login(pw)
+          const remember = this.loginRemember.checked
+          if (remember) {
+            const pin = document.getElementById('loginPinInput').value.trim()
+            await this.savePassword(pw, pin || null)
+          }
+          this.loginModal.classList.add('hidden')
+          this.loadTree()
+        } catch (err) {
+          this.loginError.textContent = err.message || 'Login failed'
+          this.loginError.classList.remove('hidden')
+        }
       }
     }
+
   }
 
   logout() {

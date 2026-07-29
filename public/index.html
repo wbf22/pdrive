@@ -16,11 +16,32 @@
       <div class="modal-header">
         <h3>🔐 PDrive Login</h3>
       </div>
-      <div class="modal-body">
-        <p>Enter the server password to unlock.</p>
-        <div class="input-group">
-          <input type="password" id="loginInput" placeholder="Server password" maxlength="128" />
+      <div class="modal-body" id="loginBody">
+
+        <!-- Normal password form -->
+        <div id="loginPasswordForm">
+          <p>Enter the server password to unlock.</p>
+          <div class="input-group">
+            <input type="password" id="loginInput" placeholder="Server password" maxlength="128" />
+          </div>
+          <label class="checkbox-label">
+            <input type="checkbox" id="loginRemember" />
+            Remember password
+          </label>
+          <div class="input-group pin-group hidden" id="pinFieldGroup">
+            <input type="password" id="loginPinInput" placeholder="Encryption PIN (optional)" maxlength="64" />
+          </div>
         </div>
+
+        <!-- PIN unlock form (shown when password was saved with a PIN) -->
+        <div id="loginPinUnlock" class="hidden">
+          <p>Enter your PIN to unlock the saved password.</p>
+          <div class="input-group">
+            <input type="password" id="loginPinUnlockInput" placeholder="Encryption PIN" maxlength="64" />
+          </div>
+          <button class="btn btn-link" id="loginForgetBtn" style="padding:0;margin-top:8px;font-size:0.85em">Forget saved password</button>
+        </div>
+
         <div class="error-msg hidden" id="loginError">Invalid password</div>
       </div>
       <div class="modal-footer">
