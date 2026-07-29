@@ -27,6 +27,8 @@ class PDriveApp {
     this.serverModal = document.getElementById('serverModal')
     this.serverUrlInput = document.getElementById('serverUrlInput')
     this.serverSubmit = document.getElementById('serverSubmit')
+    this.discoverBtn = document.getElementById('discoverBtn')
+    this.discoverStatus = document.getElementById('discoverStatus')
 
     this.actionModal = document.getElementById('actionModal')
     this.actionTitle = document.getElementById('actionModalTitle')
@@ -64,6 +66,8 @@ class PDriveApp {
     document.getElementById('closeServerModal').addEventListener('click', () => {
       this.serverModal.classList.add('hidden')
     })
+
+    this.discoverBtn.addEventListener('click', () => this.handleDiscover())
 
     document.getElementById('closeActionModal').addEventListener('click', () => {
       this.actionModal.classList.add('hidden')
@@ -133,9 +137,22 @@ class PDriveApp {
   async initAuth() {
     const url = api.loadServerUrl()
     if (!url) {
-      this.openServerSettings()
+      // No saved URL — try same-origin (served from the Python server)
+      try {
+        await api.healthCheck()
+        // Server is at the same origin
+        const token = api.loadToken()
+        if (token) {
+          this.loadTree()
+        } else {
+          this.showLogin()
+        }
+      } catch {
+        this.openServerSettings()
+      }
       return
     }
+
     const token = api.loadToken()
     if (!token) {
       this.showLogin()
@@ -167,6 +184,29 @@ class PDriveApp {
       } else {
         this.loadTree()
       }
+    }
+  }
+
+  async handleDiscover() {
+    this.discoverBtn.disabled = true
+    this.discoverStatus.textContent = 'Searching for PDrive server on the network...'
+    this.discoverStatus.classList.remove('hidden')
+
+    try {
+      const servers = await api.discoverServers()
+      if (servers.length > 0) {
+        this.serverUrlInput.value = servers[0]
+        this.discoverStatus.textContent = `Found server at ${servers[0]}`
+        if (servers.length > 1) {
+          this.discoverStatus.textContent += ` (+ ${servers.length - 1} more)`
+        }
+      } else {
+        this.discoverStatus.textContent = 'No PDrive server found on the network'
+      }
+    } catch (err) {
+      this.discoverStatus.textContent = 'Discovery failed: ' + err.message
+    } finally {
+      this.discoverBtn.disabled = false
     }
   }
 

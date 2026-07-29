@@ -127,7 +127,7 @@ export class CSVEditor {
   // Get raw value or formula for cell
   getRawValue(r, c) {
     const cellRef = `${this.colToName(c).toLowerCase()}${r + 1}`;
-    if (this.formulas[cellRef]) {
+    if (cellRef in this.formulas) {
       return '=' + this.formulas[cellRef];
     }
     return this.grid[r] && this.grid[r][c] !== undefined ? this.grid[r][c] : '';
@@ -254,14 +254,16 @@ export class CSVEditor {
         const r = parseInt(cell.getAttribute('data-r'));
         const c = parseInt(cell.getAttribute('data-c'));
         this.selectCell(r, c);
-      });
-
-      cell.addEventListener('dblclick', (e) => {
-        const r = parseInt(cell.getAttribute('data-r'));
-        const c = parseInt(cell.getAttribute('data-c'));
         this.startDirectEdit(cell, r, c);
       });
     });
+
+    // Set table width: fill container but never narrower than columns
+    const table = this.container.querySelector('#csvTable');
+    const container = table.parentElement;
+    const cellMin = 90;
+    const tableMin = Math.max(container.clientWidth, numCols * cellMin);
+    table.style.width = tableMin + 'px';
   }
 
   selectCell(r, c) {
@@ -284,16 +286,66 @@ export class CSVEditor {
     tdCell.innerHTML = `<input type="text" class="csv-inline-input" value="${this.escapeHTML(rawVal)}" />`;
     const input = tdCell.querySelector('input');
     input.focus();
+    input.select();
 
-    const finishEdit = () => {
-      this.updateCellValue(r, c, input.value);
-      this.refreshGrid();
+    const commitEdit = (val) => {
+      this.updateCellValue(r, c, val);
+      const cellRef = `${this.colToName(c).toLowerCase()}${r + 1}`;
+      tdCell.textContent = this.getDisplayValue(r, c);
+      const styleObj = this.styles[cellRef];
+      if (styleObj && styleObj.color) {
+        tdCell.style.color = `rgb(${styleObj.color})`;
+      }
+      this.formulaInput.value = this.getRawValue(r, c);
     };
 
-    input.addEventListener('blur', finishEdit);
+    input.addEventListener('input', () => {
+      this.formulaInput.value = input.value;
+    });
+
+    let navigating = false;
+
+    input.addEventListener('blur', () => {
+      if (!navigating) commitEdit(input.value);
+    });
+
     input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        finishEdit();
+      const keyActions = {
+        'Enter': { dr: 1, dc: 0 },
+        'Tab': { dr: 0, dc: 1 },
+        'ArrowDown': { dr: 1, dc: 0 },
+        'ArrowUp': { dr: -1, dc: 0 },
+        'ArrowRight': { dr: 0, dc: 1 },
+        'ArrowLeft': { dr: 0, dc: -1 },
+      };
+      const shiftActions = {
+        'Enter': { dr: -1, dc: 0 },
+        'Tab': { dr: 0, dc: -1 },
+      };
+
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        commitEdit(rawVal);
+        return;
+      }
+
+      const action = e.shiftKey ? shiftActions[e.key] : keyActions[e.key];
+      if (!action) return;
+      e.preventDefault();
+
+      const numRows = this.grid.length;
+      const numCols = this.grid[0] ? this.grid[0].length : 10;
+      const newR = Math.max(0, Math.min(numRows - 1, r + action.dr));
+      const newC = Math.max(0, Math.min(numCols - 1, c + action.dc));
+
+      if (newR !== r || newC !== c) {
+        navigating = true;
+        commitEdit(input.value);
+        this.selectCell(newR, newC);
+        const newCell = this.tableBody.querySelector(`.csv-cell[data-r="${newR}"][data-c="${newC}"]`);
+        if (newCell) this.startDirectEdit(newCell, newR, newC);
+      } else {
+        commitEdit(input.value);
       }
     });
   }

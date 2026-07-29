@@ -16,6 +16,7 @@ import secrets
 import hashlib
 import hmac
 import base64
+import socket
 import shutil
 import mimetypes
 import argparse
@@ -29,6 +30,35 @@ import re
 PASSWORD = os.environ.get("PDRIVE_PASSWORD", "")
 PORT = int(os.environ.get("PDRIVE_PORT", "8080"))
 ROOT = os.environ.get("PDRIVE_ROOT", os.getcwd())
+
+# ── Static file serving ────────────────────────────────────────────
+PUBLIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "public")
+
+MIME_MAP = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
+    ".webp": "image/webp",
+}
+
+
+def get_local_ip() -> str:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))
+        return s.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
 
 # ── In-memory state ────────────────────────────────────────────────
 TOKENS: dict[str, float] = {}          # token -> expiry timestamp
@@ -287,6 +317,10 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
         if path == "/api/files/download":
             return self._handle_download(parsed.query)
 
+        # Static files — serve the SPA for any non-API path
+        if not path.startswith("/api/"):
+            return self._serve_static(path)
+
         self._send_error(404, "Not found")
 
     def do_POST(self):
@@ -512,6 +546,21 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
         })
 
 
+    def _serve_static(self, path: str):
+        if path == "/":
+            path = "/index.html"
+        file_path = os.path.normpath(os.path.join(PUBLIC_DIR, path.lstrip("/")))
+        if not file_path.startswith(os.path.normpath(PUBLIC_DIR)):
+            return self._send_error(404, "Not found")
+        if not os.path.isfile(file_path):
+            return self._send_error(404, "Not found")
+        ext = os.path.splitext(file_path)[1].lower()
+        content_type = MIME_MAP.get(ext, "application/octet-stream")
+        with open(file_path, "rb") as f:
+            data = f.read()
+        self._send_binary(200, data, content_type)
+
+
 # ── Minimal multipart parser ────────────────────────────────────────
 def _parse_multipart(body: bytes, boundary: str) -> tuple[bytes | None, str | None]:
     """Extract first file field from a multipart body."""
@@ -569,16 +618,45 @@ def main():
     ensure_upload_dir()
 
     server = socketserver.TCPServer(("0.0.0.0", PORT), PDriveHandler)
+
+    local_ip = get_local_ip()
+    hostname = socket.gethostname()
+
     print(f" PDrive Backend running on http://0.0.0.0:{PORT}")
     print(f" Root: {ROOT}")
     print(f" Password: {'set' if PASSWORD else 'NOT SET!'}")
     print(f" Upload temp: {UPLOAD_DIR}")
+    print(f" Local:   http://{local_ip}:{PORT}")
     print()
+
+    # Optional mDNS registration
+    zc = None
+    try:
+        from zeroconf import Zeroconf, ServiceInfo
+
+        info = ServiceInfo(
+            "_pdrive._tcp.local.",
+            f"PDrive on {hostname}._pdrive._tcp.local.",
+            addresses=[socket.inet_aton(local_ip)],
+            port=PORT,
+            properties={"path": "/"},
+        )
+        zc = Zeroconf()
+        zc.register_service(info)
+        print(f" mDNS: http://pdrive.local:{PORT} → {local_ip}")
+    except ImportError:
+        print(f" mDNS: install python-zeroconf for auto-discovery")
+    except Exception as e:
+        print(f" mDNS: failed ({e})")
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down...")
-        server.shutdown()
+    finally:
+        if zc:
+            zc.close()
+        server.server_close()
 
 
 if __name__ == "__main__":

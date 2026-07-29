@@ -149,3 +149,24 @@ export async function healthCheck() {
   if (!res.ok) throw new Error('Server unreachable')
   return res.json()
 }
+
+export async function discoverServers(timeoutMs = 2000) {
+  const ports = [8080, 8081, 9090, 3000, 5000, 8000, 80]
+  const results = await Promise.allSettled(ports.map(async port => {
+    const url = `http://pdrive.local:${port}`
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      const res = await fetch(`${url}/api/health`, { signal: controller.signal })
+      if (!res.ok) throw new Error('no')
+      const data = await res.json()
+      if (data.server !== 'pdrive') throw new Error('not pdrive')
+      return url
+    } finally {
+      clearTimeout(timer)
+    }
+  }))
+  return results
+    .filter(r => r.status === 'fulfilled')
+    .map(r => r.value)
+}

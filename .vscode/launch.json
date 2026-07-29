@@ -8,7 +8,7 @@
             "name": "Pdrive server",
             "type": "debugpy",
             "request": "launch",
-            "program": "pdrive/combination/server.py",
+            "program": "server.py",
             "console": "integratedTerminal",
             "args": [
                 "--password", "nodnarB2020!"

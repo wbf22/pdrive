@@ -39,7 +39,11 @@
       <div class="modal-body">
         <div class="input-group">
           <label>PDrive Backend URL</label>
-          <input type="text" id="serverUrlInput" placeholder="http://192.168.1.100:8080" />
+          <div style="display:flex;gap:8px">
+            <input type="text" id="serverUrlInput" placeholder="http://192.168.1.100:8080" style="flex:1" />
+            <button class="btn btn-outline" id="discoverBtn">Discover</button>
+          </div>
+          <div id="discoverStatus" class="hidden" style="margin-top:8px;font-size:0.9em"></div>
         </div>
       </div>
       <div class="modal-footer">

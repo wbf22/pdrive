@@ -777,4 +777,18 @@ body {
   .sidebar.open {
     transform: translateX(0);
   }
+
+  .csv-toolbar {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px;
+  }
+
+  .csv-formula-bar {
+    min-width: 200px;
+  }
+
+  .csv-actions {
+    flex-wrap: wrap;
+  }
 }
