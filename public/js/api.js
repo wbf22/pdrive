@@ -150,6 +150,21 @@ export async function healthCheck() {
   return res.json()
 }
 
+export async function checkConnectivity(timeoutMs = 2000) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(`${_serverUrl}/api/health`, { signal: controller.signal })
+    if (!res.ok) return false
+    const data = await res.json()
+    return data.server === 'pdrive'
+  } catch {
+    return false
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export async function discoverServers(timeoutMs = 2000) {
   const ports = [8080, 8081, 9090, 3000, 5000, 8000, 80]
   const results = await Promise.allSettled(ports.map(async port => {

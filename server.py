@@ -383,6 +383,7 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
             return self._send_error(404, "File not found")
 
         file_type, mime = guess_type(abs_path)
+        mtime = os.path.getmtime(abs_path) * 1000
         if file_type == "image":
             with open(abs_path, "rb") as f:
                 raw = f.read()
@@ -392,6 +393,7 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
                 "type": "image",
                 "mime": mime,
                 "content": b64,
+                "mtime": mtime,
             })
         elif file_type == "text":
             try:
@@ -406,12 +408,14 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
                     "type": "binary",
                     "mime": "application/octet-stream",
                     "content": b64,
+                    "mtime": mtime,
                 })
                 return
             self._send_json(200, {
                 "path": file_path,
                 "type": "text",
                 "content": content,
+                "mtime": mtime,
             })
         else:
             with open(abs_path, "rb") as f:
@@ -422,6 +426,7 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
                 "type": "binary",
                 "mime": mime,
                 "content": b64,
+                "mtime": mtime,
             })
 
     def _handle_write(self):

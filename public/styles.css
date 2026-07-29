@@ -728,6 +728,38 @@ body {
   transition: opacity 0.3s;
 }
 
+/* Status Indicator */
+.status-indicator {
+  font-size: 16px;
+  margin-right: 6px;
+  cursor: default;
+}
+
+/* Tree badges for offline state */
+.tree-badge {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-left: 6px;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+.badge-offline {
+  background-color: #4ade80;
+}
+.badge-pending {
+  background-color: #facc15;
+}
+.badge-conflict {
+  background-color: #f87171;
+}
+.ctx-divider {
+  height: 1px;
+  background-color: var(--border-color);
+  margin: 4px 8px;
+}
+
 /* Context Menu (from agent_cuuqvxx) */
 .context-menu {
   position: fixed;
@@ -778,10 +810,15 @@ body {
     transform: translateX(0);
   }
 
-  .csv-toolbar {
+  .csv-toolbar,
+  .md-toolbar {
     flex-wrap: wrap;
     gap: 8px;
     padding: 8px;
+  }
+
+  .md-toolbar-group {
+    flex-wrap: wrap;
   }
 
   .csv-formula-bar {

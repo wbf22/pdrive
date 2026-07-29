@@ -1,16 +1,19 @@
-const CACHE_NAME = 'pdrive-v2'
+const CACHE_NAME = 'pdrive-v3'
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
   '/styles.css',
   '/js/api.js',
   '/js/app.js',
+  '/js/db.js',
   '/js/treeView.js',
   '/js/editors/textEditor.js',
   '/js/editors/imageViewer.js',
   '/js/editors/markdownEditor.js',
   '/js/editors/csvEditor.js',
   '/manifest.json',
+  '/icons/icon-192.png',
+  '/icons/icon-512.png',
 ]
 
 self.addEventListener('install', (event) => {

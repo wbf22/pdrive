@@ -93,6 +93,18 @@ export class TreeView {
       ? (isExpanded ? '📂' : '📁')
       : this._getFileIcon(node.name)
 
+    let badge = ''
+    if (node.offline && !isDir) {
+      badge = '<span class="tree-badge badge-offline" title="Available offline"></span>'
+      if (node.pendingAction === 'update' || node.pendingAction === 'create') {
+        badge = '<span class="tree-badge badge-pending" title="Pending upload"></span>'
+      } else if (node.pendingAction === 'delete') {
+        badge = '<span class="tree-badge badge-pending" title="Pending delete"></span>'
+      } else if (node.pendingAction === 'conflict') {
+        badge = '<span class="tree-badge badge-conflict" title="Sync conflict"></span>'
+      }
+    }
+
     let html = `
       <li class="tree-item">
         <div class="tree-node ${isActive ? 'active' : ''}"
@@ -104,6 +116,7 @@ export class TreeView {
             : '<span class="tree-spacer"></span>'}
           <span class="tree-icon">${icon}</span>
           <span class="tree-label">${this._escapeHTML(node.name)}</span>
+          ${badge}
         </div>
     `
 
