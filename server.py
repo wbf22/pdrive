@@ -135,6 +135,10 @@ def list_directory(dir_path: str) -> list[dict]:
 
 
 MIME_GUESS = mimetypes.MimeTypes()
+MIME_GUESS.add_type("application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx")
+MIME_GUESS.add_type("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx")
+MIME_GUESS.add_type("application/vnd.openxmlformats-officedocument.presentationml.presentation", ".pptx")
+MIME_GUESS.add_type("application/vnd.oasis.opendocument.text", ".odt")
 TEXT_EXTS = {".txt", ".md", ".csv", ".json", ".py", ".js", ".ts",
              ".html", ".css", ".xml", ".yaml", ".yml", ".toml",
              ".ini", ".cfg", ".sh", ".bat", ".ps1", ".log", ".env",
@@ -146,12 +150,12 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".bmp"}
 
 def guess_type(path: str) -> tuple[str, str]:
     ext = os.path.splitext(path)[1].lower()
+    mime = MIME_GUESS.guess_type(path)[0] or "application/octet-stream"
     if ext in IMAGE_EXTS:
-        mime = MIME_GUESS.guess_type(path)[0] or "application/octet-stream"
         return ("image", mime)
     if ext in TEXT_EXTS:
         return ("text", "text/plain; charset=utf-8")
-    return ("binary", "application/octet-stream")
+    return ("binary", mime)
 
 
 # ── Upload helpers ──────────────────────────────────────────────────
@@ -383,7 +387,20 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
             return self._send_error(404, "File not found")
 
         file_type, mime = guess_type(abs_path)
+        file_size = os.path.getsize(abs_path)
         mtime = os.path.getmtime(abs_path) * 1000
+
+        MAX_READ_SIZE = 50 * 1024 * 1024
+        if file_size > MAX_READ_SIZE:
+            self._send_json(200, {
+                "path": file_path,
+                "type": "too_large",
+                "mime": mime,
+                "size": file_size,
+                "mtime": mtime,
+            })
+            return
+
         if file_type == "image":
             with open(abs_path, "rb") as f:
                 raw = f.read()
@@ -393,6 +410,7 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
                 "type": "image",
                 "mime": mime,
                 "content": b64,
+                "size": file_size,
                 "mtime": mtime,
             })
         elif file_type == "text":
@@ -408,6 +426,7 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
                     "type": "binary",
                     "mime": "application/octet-stream",
                     "content": b64,
+                    "size": file_size,
                     "mtime": mtime,
                 })
                 return
@@ -415,6 +434,7 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
                 "path": file_path,
                 "type": "text",
                 "content": content,
+                "size": file_size,
                 "mtime": mtime,
             })
         else:
@@ -426,6 +446,7 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
                 "type": "binary",
                 "mime": mime,
                 "content": b64,
+                "size": file_size,
                 "mtime": mtime,
             })
 
@@ -530,7 +551,7 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
             return self._send_error(404, "File not found")
 
         file_size = os.path.getsize(abs_path)
-        mime, _ = mimetypes.guess_type(abs_path)
+        mime, _ = MIME_GUESS.guess_type(abs_path)
         if not mime:
             mime = "application/octet-stream"
 

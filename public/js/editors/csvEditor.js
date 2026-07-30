@@ -333,20 +333,31 @@ export class CSVEditor {
       if (!action) return;
       e.preventDefault();
 
-      const numRows = this.grid.length;
-      const numCols = this.grid[0] ? this.grid[0].length : 10;
-      const newR = Math.max(0, Math.min(numRows - 1, r + action.dr));
-      const newC = Math.max(0, Math.min(numCols - 1, c + action.dc));
+      let newR = r + action.dr;
+      let newC = c + action.dc;
 
-      if (newR !== r || newC !== c) {
-        navigating = true;
-        commitEdit(input.value);
-        this.selectCell(newR, newC);
-        const newCell = this.tableBody.querySelector(`.csv-cell[data-r="${newR}"][data-c="${newC}"]`);
-        if (newCell) this.startDirectEdit(newCell, newR, newC);
-      } else {
-        commitEdit(input.value);
+      const numRows = this.grid.length;
+      const numCols = this.grid[0] ? this.grid[0].length : 0;
+
+      if (newR >= numRows) {
+        this.addRow();
+      } else if (newR < 0) {
+        newR = 0;
       }
+      if (newC >= numCols) {
+        this.addCol();
+      } else if (newC < 0) {
+        newC = 0;
+      }
+
+      newR = Math.max(0, Math.min(this.grid.length - 1, newR));
+      newC = Math.max(0, Math.min(this.grid[0] ? this.grid[0].length - 1 : 0, newC));
+
+      navigating = true;
+      commitEdit(input.value);
+      this.selectCell(newR, newC);
+      const newCell = this.tableBody.querySelector(`.csv-cell[data-r="${newR}"][data-c="${newC}"]`);
+      if (newCell) this.startDirectEdit(newCell, newR, newC);
     });
   }
 

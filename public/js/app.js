@@ -3,6 +3,8 @@ import { TextEditor } from './editors/textEditor.js'
 import { ImageViewer } from './editors/imageViewer.js'
 import { MarkdownEditor } from './editors/markdownEditor.js'
 import { CSVEditor } from './editors/csvEditor.js'
+import { PDFViewer } from './editors/pdfViewer.js'
+import { DocxViewer } from './editors/docxViewer.js'
 
 import * as api from './api.js'
 import * as db from './db.js'
@@ -573,6 +575,22 @@ class PDriveApp {
       const ext = filePath.split('.').pop().toLowerCase()
       const content = fileData.content
 
+      if (fileData.type === 'too_large' || fileData.size > 50 * 1024 * 1024) {
+        const fileName = filePath.split('/').pop() || filePath
+        this.editorContainer.innerHTML = `
+          <div class="welcome-screen">
+            <div class="welcome-card" style="text-align:center">
+              <h3>📄 ${this.escapeHTML(fileName)}</h3>
+              <p style="color:var(--text-muted);margin-top:12px">
+                This file is too large to display (${(fileData.size / 1024 / 1024).toFixed(1)} MB).
+                <br>Max display size: 50 MB.
+              </p>
+            </div>
+          </div>
+        `
+        return
+      }
+
       if (fileData.type === 'image') {
         const viewer = new ImageViewer(this.editorContainer, (base64Data, encoding) => this.saveFile(base64Data, encoding || 'base64'))
         viewer.render(content, fileData.mime, filePath.split('/').pop())
@@ -585,6 +603,14 @@ class PDriveApp {
         const mdEd = new MarkdownEditor(this.editorContainer, md => this.saveFile(md))
         mdEd.render(content)
         this.activeEditor = mdEd
+      } else if (ext === 'pdf') {
+        const viewer = new PDFViewer(this.editorContainer, null)
+        viewer.render(filePath)
+        this.activeEditor = viewer
+      } else if (ext === 'docx') {
+        const viewer = new DocxViewer(this.editorContainer, null)
+        viewer.render(filePath)
+        this.activeEditor = viewer
       } else {
         const textEd = new TextEditor(this.editorContainer, text => this.saveFile(text))
         textEd.render(content, filePath)

@@ -138,6 +138,8 @@ export class TreeView {
       case 'csv': return '📊'
       case 'md': return '📝'
       case 'png': case 'jpg': case 'jpeg': case 'gif': case 'svg': case 'webp': return '🖼️'
+      case 'pdf': return '📕'
+      case 'docx': return '📘'
       case 'js': case 'json': case 'html': case 'css': case 'py': return '⚡'
       default: return '📄'
     }
