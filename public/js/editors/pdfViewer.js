@@ -229,7 +229,13 @@ export class PDFViewer {
     clearTimeout(this._zoomTimer);
     this.canvas.style.transform = '';
     this.renderPending = null;
-    this.requestRender();
+    const container = this.pageContainerEl;
+    container.scrollTop = 0;
+    container.scrollLeft = 0;
+    this.requestRender().then(() => {
+      container.scrollTop = 0;
+      container.scrollLeft = 0;
+    });
   }
 
   onPrevPage() {
