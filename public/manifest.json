@@ -1,21 +1,26 @@
 {
   "short_name": "PDrive",
   "name": "PDrive - Personal Cloud & SSH Explorer",
+  "id": "/",
   "icons": [
     {
-      "src": "icons/icon-192.png",
+      "src": "icons/android-chrome-192x192.png",
       "type": "image/png",
-      "sizes": "192x192"
+      "sizes": "192x192",
+      "purpose": "any maskable"
     },
     {
-      "src": "icons/icon-512.png",
+      "src": "icons/android-chrome-512x512.png",
       "type": "image/png",
-      "sizes": "512x512"
+      "sizes": "512x512",
+      "purpose": "any maskable"
     }
   ],
   "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
   "background_color": "#1e1e2e",
   "theme_color": "#1e1e2e",
-  "display": "standalone",
-  "orientation": "any"
+  "description": "A Google Drive-style file manager for your remote host."
 }

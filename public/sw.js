@@ -1,8 +1,9 @@
-const CACHE_NAME = 'pdrive-v3'
+const CACHE_NAME = 'pdrive-v4'
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
   '/styles.css',
+  '/manifest.json',
   '/lib/pdf.min.js',
   '/lib/pdf.worker.min.js',
   '/lib/mammoth.browser.min.js',
@@ -12,13 +13,17 @@ const ASSETS_TO_CACHE = [
   '/js/treeView.js',
   '/js/editors/textEditor.js',
   '/js/editors/imageViewer.js',
+  '/js/editors/imageEditor.js',
   '/js/editors/markdownEditor.js',
   '/js/editors/csvEditor.js',
   '/js/editors/pdfViewer.js',
   '/js/editors/docxViewer.js',
-  '/manifest.json',
-  '/icons/icon-192.png',
-  '/icons/icon-512.png',
+  '/icons/android-chrome-192x192.png',
+  '/icons/android-chrome-512x512.png',
+  '/icons/apple-touch-icon.png',
+  '/icons/favicon-16x16.png',
+  '/icons/favicon-32x32.png',
+  '/icons/favicon.ico',
 ]
 
 self.addEventListener('install', (event) => {
