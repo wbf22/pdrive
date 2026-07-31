@@ -314,6 +314,14 @@ body {
   gap: 8px;
 }
 
+.csv-zoom-label {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  min-width: 42px;
+  text-align: center;
+}
+
 .csv-table-container {
   flex: 1;
   overflow: auto;
@@ -768,6 +776,14 @@ body {
 
 .icon-btn:hover {
   background-color: var(--bg-hover);
+}
+
+.mobile-menu-toggle {
+  font-size: 24px;
+  line-height: 1;
+  padding: 10px 12px;
+  margin: 0 -4px;
+  border-radius: 8px;
 }
 
 .input-group {

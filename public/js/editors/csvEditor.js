@@ -1,6 +1,7 @@
 /**
  * Interactive CSV & Custom Meta Spreadsheet Editor
  */
+import { attachPinchZoom } from '../pinchZoom.js';
 
 export class CSVEditor {
   constructor(container, onSave) {
@@ -11,6 +12,7 @@ export class CSVEditor {
     this.styles = {}; // { 'b6': { color: '13,115,30' } }
     this.metaLines = []; // preserves any unknown <meta> tags
     this.selectedCell = null; // { r, c }
+    this.zoom = 1;
   }
 
   // Parse CSV string into grid, formulas, styles
@@ -187,6 +189,12 @@ export class CSVEditor {
             <button class="btn btn-sm" id="csvAddColBtn">+ Col</button>
             <button class="btn btn-primary btn-sm" id="csvSaveBtn">Save CSV</button>
           </div>
+          <div class="csv-actions">
+            <button class="btn btn-sm" id="csvZoomOut" title="Zoom Out">−</button>
+            <span class="csv-zoom-label" id="csvZoomLabel">100%</span>
+            <button class="btn btn-sm" id="csvZoomIn" title="Zoom In">+</button>
+            <button class="btn btn-sm" id="csvZoomReset" title="Reset Zoom">Reset</button>
+          </div>
         </div>
         <div class="csv-table-container">
           <table class="csv-table" id="csvTable">
@@ -201,6 +209,9 @@ export class CSVEditor {
 
     this.tableHeader = this.container.querySelector('#csvHeaderRow');
     this.tableBody = this.container.querySelector('#csvBody');
+    this.tableEl = this.container.querySelector('#csvTable');
+    this.tableContainer = this.container.querySelector('.csv-table-container');
+    this.zoomLabel = this.container.querySelector('#csvZoomLabel');
     this.formulaInput = this.container.querySelector('#csvFormulaInput');
     this.cellRefDisplay = this.container.querySelector('#csvCellRef');
     this.colorPicker = this.container.querySelector('#csvColorPicker');
@@ -213,9 +224,42 @@ export class CSVEditor {
     this.container.querySelector('#csvAddColBtn').addEventListener('click', () => this.addCol());
     this.container.querySelector('#csvSaveBtn').addEventListener('click', () => this.save());
     this.colorPicker.addEventListener('change', (e) => this.onColorChange(e.target.value));
+    this.container.querySelector('#csvZoomIn').addEventListener('click', () => this.setZoom(this.zoom + 0.1));
+    this.container.querySelector('#csvZoomOut').addEventListener('click', () => this.setZoom(this.zoom - 0.1));
+    this.container.querySelector('#csvZoomReset').addEventListener('click', () => this.setZoom(1));
+
+    // Desktop: ctrl+wheel zoom anchored at the cursor
+    this.tableContainer.addEventListener('wheel', (e) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+      this.setZoom(this.zoom * factor, e.clientX, e.clientY);
+    }, { passive: false });
+
+    // Mobile: two-finger pinch zoom
+    attachPinchZoom(this.tableContainer, {
+      getZoom: () => this.zoom,
+      onPinch: (zoom, midX, midY) => this.setZoom(zoom, midX, midY),
+    });
 
     // Default select A1
     this.selectCell(0, 0);
+  }
+
+  setZoom(newZoom, clientX, clientY) {
+    const clamped = Math.min(2, Math.max(0.5, newZoom));
+    if (Math.abs(clamped - this.zoom) < 0.001) return;
+    const sx = this.tableContainer.scrollLeft;
+    const sy = this.tableContainer.scrollTop;
+    const rect = this.tableContainer.getBoundingClientRect();
+    const vx = clientX === undefined ? rect.width / 2 : clientX - rect.left;
+    const vy = clientY === undefined ? rect.height / 2 : clientY - rect.top;
+    const k = clamped / this.zoom;
+    this.zoom = clamped;
+    this.tableEl.style.zoom = this.zoom;
+    this.zoomLabel.textContent = `${Math.round(this.zoom * 100)}%`;
+    this.tableContainer.scrollLeft = (sx + vx) * k - vx;
+    this.tableContainer.scrollTop = (sy + vy) * k - vy;
   }
 
   buildGridUI() {

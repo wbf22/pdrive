@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pdrive-v9'
+const CACHE_NAME = 'pdrive-v11'
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
