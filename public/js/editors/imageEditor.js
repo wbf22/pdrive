@@ -3,6 +3,7 @@
  * Supports drawing, line thickness, color picker, fill tool, selection copy/paste, undo/redo, zoom/pan.
  * Optimized for mobile touch and desktop mouse interactions.
  */
+import { attachPinchZoom } from '../pinchZoom.js';
 
 export class ImageEditor {
   constructor(container, options = {}) {
@@ -32,14 +33,11 @@ export class ImageEditor {
     this.isDrawing = false;
     this.isPanning = false;
     this.isSelecting = false;
-    this.isPinching = false;
     this.isDraggingPaste = false;
     this.lastX = 0;
     this.lastY = 0;
     this.lastPanX = 0;
     this.lastPanY = 0;
-    this.pinchStartDist = 0;
-    this.pinchStartZoom = 1.0;
 
     this.handleKeyDown = this.handleKeyDown.bind(this);
   }
@@ -201,6 +199,24 @@ export class ImageEditor {
     this.viewport.addEventListener('touchmove', (e) => this.handleTouchMove(e), { passive: false });
     this.viewport.addEventListener('touchend', (e) => this.handleTouchEnd(e), { passive: false });
     this.viewport.addEventListener('touchcancel', (e) => this.handleTouchEnd(e), { passive: false });
+
+    // Two-finger pinch to zoom + pan
+    attachPinchZoom(this.viewport, {
+      getZoom: () => this.zoom,
+      onPinch: (zoom, midX, midY, panDx, panDy) => {
+        const oldZoom = this.zoom;
+        const newZoom = Math.min(20, Math.max(0.1, zoom));
+        if (newZoom === oldZoom) return;
+        const rect = this.viewport.getBoundingClientRect();
+        const ratio = newZoom / oldZoom;
+        const oldMidRelX = (midX - panDx) - rect.left;
+        const oldMidRelY = (midY - panDy) - rect.top;
+        this.panX = ratio * this.panX + (1 - ratio) * oldMidRelX + panDx;
+        this.panY = ratio * this.panY + (1 - ratio) * oldMidRelY + panDy;
+        this.zoom = newZoom;
+        this.applyTransform();
+      }
+    });
   }
 
   cleanup() {
@@ -399,17 +415,10 @@ export class ImageEditor {
   handleTouchStart(e) {
     e.preventDefault();
     if (e.touches.length === 2) {
-      // Two finger pinch to zoom and pan
-      this.isPinching = true;
+      // Two-finger pinch is handled by attachPinchZoom — cancel any in-progress tool action
       this.isDrawing = false;
       this.isPanning = false;
       this.isSelecting = false;
-      const t0 = e.touches[0];
-      const t1 = e.touches[1];
-      this.pinchStartDist = Math.hypot(t0.clientX - t1.clientX, t0.clientY - t1.clientY);
-      this.pinchStartZoom = this.zoom;
-      this.lastPanX = (t0.clientX + t1.clientX) / 2;
-      this.lastPanY = (t0.clientY + t1.clientY) / 2;
       return;
     }
 
@@ -426,31 +435,6 @@ export class ImageEditor {
 
   handleTouchMove(e) {
     e.preventDefault();
-    if (this.isPinching && e.touches.length === 2) {
-      const t0 = e.touches[0];
-      const t1 = e.touches[1];
-      const dist = Math.hypot(t0.clientX - t1.clientX, t0.clientY - t1.clientY);
-      const midX = (t0.clientX + t1.clientX) / 2;
-      const midY = (t0.clientY + t1.clientY) / 2;
-
-      // Pan
-      const dx = midX - this.lastPanX;
-      const dy = midY - this.lastPanY;
-      this.lastPanX = midX;
-      this.lastPanY = midY;
-      this.panX += dx;
-      this.panY += dy;
-
-      // Zoom
-      if (this.pinchStartDist > 0) {
-        const zoomFactor = dist / this.pinchStartDist;
-        const newZoom = Math.min(20, Math.max(0.1, this.pinchStartZoom * zoomFactor));
-        this.zoom = newZoom;
-      }
-      this.applyTransform();
-      return;
-    }
-
     if (e.touches.length === 1) {
       const touch = e.touches[0];
       this.handleMouseMove({
@@ -462,9 +446,6 @@ export class ImageEditor {
 
   handleTouchEnd(e) {
     e.preventDefault();
-    if (e.touches.length < 2 && this.isPinching) {
-      this.isPinching = false;
-    }
     if (e.touches.length === 0) {
       this.handleMouseUp({
         clientX: this.lastPanX || 0,

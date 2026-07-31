@@ -440,8 +440,10 @@ body {
 
 .editor-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   padding: 8px 16px;
   background-color: var(--bg-card);
   border-bottom: 1px solid var(--border-color);
@@ -451,6 +453,14 @@ body {
   font-family: var(--font-mono);
   color: var(--primary);
   font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.editor-toolbar .file-path-badge {
+  flex: 1 1 auto;
 }
 
 .editor-main {
@@ -505,8 +515,10 @@ body {
 
 .image-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   padding: 8px 16px;
   background-color: var(--bg-card);
   border-bottom: 1px solid var(--border-color);
@@ -514,30 +526,47 @@ body {
 
 .image-title {
   font-weight: bold;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .image-controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
 
 .image-display-area {
   flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  position: relative;
+  overflow: hidden;
   background-color: var(--bg-dark);
-  overflow: auto;
-  padding: 24px;
+  touch-action: none;
+  cursor: grab;
+}
+
+.image-display-area.dragging {
+  cursor: grabbing;
 }
 
 .image-display-area img {
-  max-width: 90%;
-  max-height: 90%;
-  transition: transform 0.2s ease;
+  display: block;
   box-shadow: 0 4px 20px rgba(0,0,0,0.5);
   border-radius: 4px;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.image-transform-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  will-change: transform;
 }
 
 /* Image Editor */
@@ -902,16 +931,23 @@ body {
 
 .pdf-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   padding: 8px 16px;
   background-color: var(--bg-card);
   border-bottom: 1px solid var(--border-color);
   flex-shrink: 0;
 }
 
+.pdf-toolbar .file-path-badge {
+  flex: 1 1 auto;
+}
+
 .pdf-controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
@@ -959,18 +995,18 @@ body {
 .pdf-page-container {
   flex: 1;
   display: flex;
-  flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
+  justify-content: flex-start;
   overflow: auto;
   background-color: var(--bg-dark);
   padding: 16px;
 }
 
 .pdf-page-canvas {
+  display: block;
+  margin: auto;
   box-shadow: 0 2px 12px rgba(0,0,0,0.4);
   border-radius: 2px;
-  max-width: 100%;
-  height: auto;
 }
 
 /* DOCX Viewer */
@@ -982,16 +1018,23 @@ body {
 
 .docx-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   padding: 8px 16px;
   background-color: var(--bg-card);
   border-bottom: 1px solid var(--border-color);
   flex-shrink: 0;
 }
 
+.docx-toolbar .file-path-badge {
+  flex: 1 1 auto;
+}
+
 .docx-controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
@@ -1109,6 +1152,43 @@ body {
     padding: 8px;
   }
 
+  .editor-toolbar,
+  .image-toolbar,
+  .pdf-toolbar,
+  .docx-toolbar {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px;
+  }
+
+  .image-title,
+  .pdf-toolbar .file-path-badge {
+    flex: 1 1 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .image-controls,
+  .pdf-controls,
+  .docx-controls {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px;
+  }
+
+  .image-toolbar .toolbar-divider,
+  .pdf-toolbar .toolbar-divider {
+    display: none;
+  }
+
+  .image-editor-toolbar {
+    justify-content: flex-start;
+    gap: 6px;
+    padding: 8px;
+  }
+
   .md-toolbar-group {
     flex-wrap: wrap;
   }
@@ -1120,4 +1200,31 @@ body {
   .csv-actions {
     flex-wrap: wrap;
   }
+}
+
+/* Fullscreen */
+.pdf-viewer-wrapper:fullscreen,
+.docx-viewer-wrapper:fullscreen,
+.image-viewer-wrapper:fullscreen {
+  width: 100%;
+  height: 100%;
+  background-color: var(--bg-dark);
+}
+
+.pdf-viewer-wrapper:-webkit-full-screen,
+.docx-viewer-wrapper:-webkit-full-screen,
+.image-viewer-wrapper:-webkit-full-screen {
+  width: 100%;
+  height: 100%;
+  background-color: var(--bg-dark);
+}
+
+.app-fullscreen {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  z-index: 9999 !important;
+  background-color: var(--bg-dark);
 }

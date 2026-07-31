@@ -1,4 +1,5 @@
 import { downloadFile } from '../api.js';
+import { initFullscreenButton } from '../fullscreen.js';
 
 export class DocxViewer {
   constructor(container, onSave) {
@@ -15,6 +16,7 @@ export class DocxViewer {
         <div class="docx-toolbar">
           <span class="file-path-badge">${this.escapeHTML(filePath)}</span>
           <div class="docx-controls">
+            <button class="btn btn-sm btn-outline" id="docxFullscreenBtn" title="Fullscreen">⛶ Fullscreen</button>
             <button class="btn btn-sm btn-outline" id="docxDownloadBtn" title="Download DOCX">⬇ Download</button>
           </div>
         </div>
@@ -22,6 +24,11 @@ export class DocxViewer {
         <div class="docx-content" id="docxContent"></div>
       </div>
     `;
+
+    this._detachFs = initFullscreenButton(
+      this.container.querySelector('#docxFullscreenBtn'),
+      this.container.querySelector('.docx-viewer-wrapper')
+    );
 
     try {
       const response = await downloadFile(filePath);

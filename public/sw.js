@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pdrive-v4'
+const CACHE_NAME = 'pdrive-v8'
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
@@ -11,6 +11,8 @@ const ASSETS_TO_CACHE = [
   '/js/app.js',
   '/js/db.js',
   '/js/treeView.js',
+  '/js/pinchZoom.js',
+  '/js/fullscreen.js',
   '/js/editors/textEditor.js',
   '/js/editors/imageViewer.js',
   '/js/editors/imageEditor.js',
