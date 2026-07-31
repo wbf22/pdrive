@@ -11,7 +11,7 @@
             "program": "server.py",
             "console": "integratedTerminal",
             "args": [
-                "--password", "nodnarB2020!",
+                "--password", "the_bear_is_bash_fb2754a0_73b4_44eb_9a99_df36e4aeb95b",
                 "--root", "~/Documents/SYNC"
             ]
         }

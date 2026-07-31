@@ -349,6 +349,8 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
             return self._handle_move()
         if path == "/api/files/upload":
             return self._handle_upload()
+        if path == "/api/files/sync":
+            return self._handle_sync()
 
         self._send_error(404, "Not found")
 
@@ -390,7 +392,7 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
         file_size = os.path.getsize(abs_path)
         mtime = os.path.getmtime(abs_path) * 1000
 
-        MAX_READ_SIZE = 50 * 1024 * 1024
+        MAX_READ_SIZE = 12 * 1024 * 1024
         if file_size > MAX_READ_SIZE:
             self._send_json(200, {
                 "path": file_path,
@@ -539,6 +541,35 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
                 return
 
         self._send_error(400, "Upload failed — use multipart or chunked protocol")
+
+    def _handle_sync(self):
+        body = self._parse_json_body()
+        client_files = body.get("files", {})
+
+        server_files = {}
+        for root, _dirs, files in os.walk(ROOT):
+            for name in files:
+                full = os.path.join(root, name)
+                try:
+                    st = os.stat(full)
+                except OSError:
+                    continue
+                rel = os.path.relpath(full, ROOT)
+                posix_path = "/" + rel.replace(os.sep, "/")
+                server_files[posix_path] = {
+                    "mtime": st.st_mtime * 1000,
+                    "size": st.st_size,
+                }
+
+        modified = []
+        for path, info in server_files.items():
+            client_mtime = client_files.get(path)
+            if client_mtime is None or client_mtime < info["mtime"]:
+                modified.append({"path": path, "mtime": info["mtime"], "size": info["size"]})
+
+        deleted = [p for p in client_files if p not in server_files]
+
+        self._send_json(200, {"modified": modified, "deleted": deleted})
 
     def _handle_download(self, query: str):
         params = urllib.parse.parse_qs(query)

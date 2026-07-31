@@ -45,7 +45,8 @@ export class TreeView {
   }
 
   render() {
-    this.container.innerHTML = `<ul class="tree-root">${this._renderNode(this.treeData)}</ul>`
+    const children = this.treeData.children || []
+    this.container.innerHTML = `<ul class="tree-root">${children.map(c => this._renderNode(c)).join('')}</ul>`
 
     this.container.querySelectorAll('.tree-node').forEach(nodeEl => {
       const path = nodeEl.getAttribute('data-path')

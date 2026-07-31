@@ -384,24 +384,32 @@ class PDriveApp {
           if (e.key === 'Enter') this.loginSubmit.click()
         }
       } else {
-        // No PIN — auto-fill and attempt login
+        // No PIN — auto-fill, let user edit and re-submit
         pwForm.classList.remove('hidden')
         pinUnlock.classList.add('hidden')
         document.getElementById('loginInput').value = saved.data
         document.getElementById('loginRemember').checked = true
         document.getElementById('pinFieldGroup').classList.add('hidden')
         this.loginModal.classList.remove('hidden')
-        this.loginSubmit.focus()
+        this.loginInput.focus()
+        this.loginInput.select()
 
         this.loginSubmit.onclick = async () => {
+          const pw = document.getElementById('loginInput').value.trim()
+          if (!pw) return
           try {
-            await api.login(saved.data)
+            await api.login(pw)
+            const remember = document.getElementById('loginRemember').checked
+            if (remember) {
+              const pin = document.getElementById('loginPinInput').value.trim()
+              await this.savePassword(pw, pin || null)
+            } else {
+              this.clearSavedPassword()
+            }
             this.loginModal.classList.add('hidden')
             this.loadTree()
           } catch (err) {
-            // Saved password failed — show normal form
-            this.showLogin()
-            this.loginError.textContent = 'Saved password rejected — re-enter password'
+            this.loginError.textContent = err.message || 'Login failed'
             this.loginError.classList.remove('hidden')
           }
         }
@@ -575,7 +583,7 @@ class PDriveApp {
       const ext = filePath.split('.').pop().toLowerCase()
       const content = fileData.content
 
-      if (fileData.type === 'too_large' || fileData.size > 50 * 1024 * 1024) {
+      if (fileData.type === 'too_large' || fileData.size > 12 * 1024 * 1024) {
         const fileName = filePath.split('/').pop() || filePath
         this.editorContainer.innerHTML = `
           <div class="welcome-screen">
@@ -583,7 +591,7 @@ class PDriveApp {
               <h3>📄 ${this.escapeHTML(fileName)}</h3>
               <p style="color:var(--text-muted);margin-top:12px">
                 This file is too large to display (${(fileData.size / 1024 / 1024).toFixed(1)} MB).
-                <br>Max display size: 50 MB.
+                <br>Max display size: 12 MB.
               </p>
             </div>
           </div>
