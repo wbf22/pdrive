@@ -15,6 +15,8 @@ class PDriveApp {
     this.activeEditor = null
     this.ctxTarget = null
     this.isOnline = false
+    this._syncing = false
+    this._syncRetryTimer = null
 
     this.initDOM()
     this.initPWA()
@@ -151,6 +153,7 @@ class PDriveApp {
       this.isOnline = false
       this.updateStatusIndicator()
       this.loadOfflineTree()
+      this.startSyncRetry()
     })
   }
 
@@ -160,8 +163,40 @@ class PDriveApp {
     if (this.isOnline) {
       await this.syncOfflineChanges()
       await this.loadTree()
+      this.stopSyncRetry()
     } else {
       this.loadOfflineTree()
+      this.startSyncRetry()
+    }
+  }
+
+  // Run once we're authenticated and the server is reachable.
+  async syncAndReload() {
+    this.isOnline = true
+    this.updateStatusIndicator()
+    await this.syncOfflineChanges()
+    await this.loadTree()
+  }
+
+  // Keep retrying in the background when the server is unreachable so
+  // offline edits aren't stuck until the next network transition.
+  startSyncRetry() {
+    if (this._syncRetryTimer) return
+    this._syncRetryTimer = setInterval(async () => {
+      this.isOnline = await api.checkConnectivity()
+      this.updateStatusIndicator()
+      if (this.isOnline) {
+        await this.syncOfflineChanges()
+        await this.loadTree()
+        this.stopSyncRetry()
+      }
+    }, 30000)
+  }
+
+  stopSyncRetry() {
+    if (this._syncRetryTimer) {
+      clearInterval(this._syncRetryTimer)
+      this._syncRetryTimer = null
     }
   }
 
@@ -187,7 +222,7 @@ class PDriveApp {
         this.updateStatusIndicator()
         const token = api.loadToken()
         if (token) {
-          this.loadTree()
+          await this.syncAndReload()
         } else {
           this.showLogin()
         }
@@ -214,7 +249,7 @@ class PDriveApp {
       await api.listFiles('/')
       this.isOnline = true
       this.updateStatusIndicator()
-      this.loadTree()
+      await this.syncAndReload()
     } catch {
       // Server unreachable — try offline mode
       this.isOnline = false
@@ -243,7 +278,7 @@ class PDriveApp {
       if (!api.getToken()) {
         this.showLogin()
       } else {
-        this.loadTree()
+        this.syncAndReload()
       }
     }
   }
@@ -370,7 +405,7 @@ class PDriveApp {
             const password = await this.decryptWithPin(saved.data, pin)
             await api.login(password)
             this.loginModal.classList.add('hidden')
-            this.loadTree()
+            await this.syncAndReload()
           } catch (err) {
             this.loginError.textContent = err.message || 'Wrong PIN or login failed'
             this.loginError.classList.remove('hidden')
@@ -407,7 +442,7 @@ class PDriveApp {
               this.clearSavedPassword()
             }
             this.loginModal.classList.add('hidden')
-            this.loadTree()
+            await this.syncAndReload()
           } catch (err) {
             this.loginError.textContent = err.message || 'Login failed'
             this.loginError.classList.remove('hidden')
@@ -435,7 +470,7 @@ class PDriveApp {
             await this.savePassword(pw, pin || null)
           }
           this.loginModal.classList.add('hidden')
-          this.loadTree()
+          await this.syncAndReload()
         } catch (err) {
           this.loginError.textContent = err.message || 'Login failed'
           this.loginError.classList.remove('hidden')
@@ -446,6 +481,7 @@ class PDriveApp {
   }
 
   logout() {
+    this.stopSyncRetry()
     api.setToken('')
     this.activeFilePath = null
     this.editorContainer.innerHTML = '<div class="welcome-screen"><h2>Locked</h2></div>'
@@ -555,16 +591,26 @@ class PDriveApp {
     try {
       let fileData
       if (this.isOnline) {
-        fileData = await api.readFile(filePath)
-        // Cache for offline if marked
-        if (await db.isMarkedOffline(filePath)) {
-          const size = fileData.content ? fileData.content.length : 0
-          if (size < db.MAX_OFFLINE_SIZE) {
-            await db.cacheFile(filePath, fileData.content, fileData.mtime, {
-              mime: fileData.mime || 'text/plain',
-              contentType: fileData.type || 'text',
-              size,
-            })
+        const cached = await db.getCachedFile(filePath)
+        if (cached && cached.offline && !cached.synced) {
+          // Unsynced local edits exist — show those until sync completes.
+          fileData = {
+            type: cached.contentType,
+            mime: cached.mime,
+            content: cached.content,
+          }
+        } else {
+          fileData = await api.readFile(filePath)
+          // Cache for offline if marked
+          if (cached && cached.offline) {
+            const size = fileData.content ? fileData.content.length : 0
+            if (size < db.MAX_OFFLINE_SIZE) {
+              await db.cacheFile(filePath, fileData.content, fileData.mtime, {
+                mime: fileData.mime || 'text/plain',
+                contentType: fileData.type || 'text',
+                size,
+              })
+            }
           }
         }
       } else {
@@ -968,76 +1014,194 @@ class PDriveApp {
   }
 
   async syncOfflineChanges() {
-    const pending = await db.getPendingActions()
-    if (pending.length === 0) return
+    if (this._syncing) return
+    this._syncing = true
+    try {
+      const pending = await db.getPendingActions()
+      if (pending.length > 0) {
+        this.showToast(`Syncing ${pending.length} offline change(s)...`)
 
-    this.showToast(`Syncing ${pending.length} offline change(s)...`)
-
-    for (const action of pending) {
-      try {
-        if (action.type === 'create' || action.type === 'update') {
-          // Check for conflicts on update
-          if (action.type === 'update') {
-            try {
-              const serverData = await api.readFile(action.path)
-              const cached = await db.getCachedFile(action.path)
-              if (cached && serverData.mtime > cached.serverMtime) {
-                // Server has changes — conflict
-                const resolution = await this.showConflictModal(action.path)
-                if (resolution === 'keep') {
-                  // Save as copy
-                  const conflictedPath = action.path.replace(/(\.\w+)?$/, '.conflicted$1')
-                  await api.writeFile(conflictedPath, action.content, action.encoding)
-                  this.showToast(`Saved as ${conflictedPath}`)
-                }
-                // If 'accept', just update local cache with server version
-                if (cached) {
-                  await db.cacheFile(action.path, serverData.content, serverData.mtime, {
-                    mime: serverData.mime || 'text/plain',
-                    contentType: serverData.type || 'text',
-                  })
-                }
-                await db.removePendingAction(action.id)
-                continue
-              }
-            } catch {
-              // Server file doesn't exist or error — still try to write
-            }
-          }
-          await api.writeFile(action.path, action.content || '', action.encoding)
-        } else if (action.type === 'delete') {
+        for (const action of pending) {
           try {
-            // Check if server has modifications
-            const serverData = await api.readFile(action.path)
-            const cached = await db.getCachedFile(action.path)
-            if (cached && serverData.mtime > cached.serverMtime) {
-              const resolution = await this.showConflictModal(action.path, true)
-              if (resolution === 'keep') {
-                await api.deleteItem(action.path, false)
+            if (action.type === 'create' || action.type === 'update') {
+              // Check for conflicts on update
+              if (action.type === 'update') {
+                try {
+                  const serverData = await api.readFile(action.path)
+                  const cached = await db.getCachedFile(action.path)
+                  if (cached && serverData.mtime > cached.serverMtime) {
+                    // Server has changes — conflict
+                    const resolution = await this.showConflictModal(action.path)
+                    if (resolution === 'keep') {
+                      // Save as copy
+                      const conflictedPath = action.path.replace(/(\.\w+)?$/, '.conflicted$1')
+                      await api.writeFile(conflictedPath, action.content, action.encoding)
+                      this.showToast(`Saved as ${conflictedPath}`)
+                    }
+                    // If 'accept', just update local cache with server version
+                    if (cached) {
+                      await db.cacheFile(action.path, serverData.content, serverData.mtime, {
+                        mime: serverData.mime || 'text/plain',
+                        contentType: serverData.type || 'text',
+                      })
+                    }
+                    await db.removePendingAction(action.id)
+                    continue
+                  }
+                } catch {
+                  // Server file doesn't exist or error — still try to write
+                }
               }
-              // If 'accept', don't delete — server version wins
-              if (cached) {
-                await db.cacheFile(action.path, serverData.content, serverData.mtime, {
-                  mime: serverData.mime || 'text/plain',
-                  contentType: serverData.type || 'text',
-                })
+              await api.writeFile(action.path, action.content || '', action.encoding)
+              // The push succeeded — mark the cache synced so it's not overwritten.
+              const cached = await db.getCachedFile(action.path)
+              if (cached && cached.offline) {
+                await db.markSynced(action.path)
               }
-              await db.removePendingAction(action.id)
-              continue
+            } else if (action.type === 'delete') {
+              try {
+                // Check if server has modifications
+                const serverData = await api.readFile(action.path)
+                const cached = await db.getCachedFile(action.path)
+                if (cached && serverData.mtime > cached.serverMtime) {
+                  const resolution = await this.showConflictModal(action.path, true)
+                  if (resolution === 'keep') {
+                    await api.deleteItem(action.path, false)
+                  }
+                  // If 'accept', don't delete — server version wins
+                  if (cached) {
+                    await db.cacheFile(action.path, serverData.content, serverData.mtime, {
+                      mime: serverData.mime || 'text/plain',
+                      contentType: serverData.type || 'text',
+                    })
+                  }
+                  await db.removePendingAction(action.id)
+                  continue
+                }
+              } catch {
+                // File doesn't exist on server — delete is a no-op
+              }
+              await api.deleteItem(action.path, false)
             }
-          } catch {
-            // File doesn't exist on server — delete is a no-op
+            await db.removePendingAction(action.id)
+          } catch (err) {
+            this.showToast(`Sync failed for ${action.path}: ${err.message}`)
           }
-          await api.deleteItem(action.path, false)
         }
-        await db.removePendingAction(action.id)
-      } catch (err) {
-        this.showToast(`Sync failed for ${action.path}: ${err.message}`)
+
+        this.showToast('Sync complete!')
+      }
+
+      // Reconcile the offline cache against the server (deleted / modified files).
+      await this.reconcileOfflineCache()
+    } finally {
+      this._syncing = false
+    }
+  }
+
+  async reconcileOfflineCache() {
+    const offlineFiles = await db.getAllOfflineFiles()
+    if (offlineFiles.length === 0) return
+
+    const manifest = {}
+    for (const f of offlineFiles) manifest[f.path] = f.serverMtime || 0
+
+    let result
+    try {
+      result = await api.syncFiles(manifest)
+    } catch (err) {
+      return
+    }
+
+    const pending = await db.getPendingActions()
+    const pendingPaths = new Set(pending.map(a => a.path))
+
+    // Files deleted on the server while cached offline — ask the user.
+    for (const path of result.deleted || []) {
+      if (pendingPaths.has(path)) continue
+      const cached = await db.getCachedFile(path)
+      if (!cached) continue
+      const remove = await this.showConfirmAsync(
+        'Deleted on Server',
+        `"${path}" was deleted on the server.\n\nRemove it from this device?`,
+        'Remove',
+        'Keep'
+      )
+      if (remove) {
+        await db.unmarkOffline(path)
+        if (this.activeFilePath === path) {
+          this.activeFilePath = null
+          this.fileMoveBtn.disabled = true
+          this.fileDeleteBtn.disabled = true
+          this.fileOfflineBtn.disabled = true
+          this.editorContainer.innerHTML = '<div class="welcome-screen"><h2>Deleted on Server</h2></div>'
+        }
+        this.showToast('Removed from device')
       }
     }
 
-    this.showToast('Sync complete!')
-    await this.loadTree()
+    // Files modified on the server — silent refresh unless local edits exist.
+    for (const m of result.modified || []) {
+      const cached = await db.getCachedFile(m.path)
+      if (!cached || !cached.offline) continue
+      if (m.size > db.MAX_OFFLINE_SIZE) continue
+
+      if (cached.synced) {
+        // No local edits — silently update the cache to the server version.
+        try {
+          const data = await api.readFile(m.path)
+          if (data.type === 'too_large') continue
+          await db.cacheFile(m.path, data.content, data.mtime, {
+            mime: data.mime || 'text/plain',
+            contentType: data.type || 'text',
+            size: m.size,
+          })
+        } catch { /* skip */ }
+      } else {
+        // Local edits exist — prompt for conflict resolution.
+        const resolution = await this.showConflictModal(m.path)
+        if (resolution === 'keep') {
+          const conflictedPath = m.path.replace(/(\.\w+)?$/, '.conflicted$1')
+          try {
+            await api.writeFile(conflictedPath, cached.content)
+            this.showToast(`Saved as ${conflictedPath}`)
+          } catch { /* ignore */ }
+        }
+        try {
+          const data = await api.readFile(m.path)
+          if (data.type !== 'too_large') {
+            await db.cacheFile(m.path, data.content, data.mtime, {
+              mime: data.mime || 'text/plain',
+              contentType: data.type || 'text',
+              size: m.size,
+            })
+          }
+        } catch { /* skip */ }
+        for (const a of pending) {
+          if (a.path === m.path) await db.removePendingAction(a.id)
+        }
+      }
+    }
+  }
+
+  showConfirmAsync(title, msg, okLabel, cancelLabel) {
+    return new Promise((resolve) => {
+      this.confirmTitle.textContent = title
+      this.confirmMsg.textContent = msg
+      this.confirmOk.textContent = okLabel || 'OK'
+      this.confirmCancel.textContent = cancelLabel || 'Cancel'
+      const btn3 = document.getElementById('confirmThird')
+      if (btn3) btn3.style.display = 'none'
+      this.confirmOk.onclick = () => {
+        this.confirmModal.classList.add('hidden')
+        resolve(true)
+      }
+      this.confirmCancel.onclick = () => {
+        this.confirmModal.classList.add('hidden')
+        resolve(false)
+      }
+      this.confirmModal.classList.remove('hidden')
+    })
   }
 
   showConflictModal(filePath, isDelete = false) {

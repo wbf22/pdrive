@@ -80,6 +80,10 @@ export async function readFile(path) {
   return apiPost('/api/files/read', { path })
 }
 
+export async function syncFiles(clientFiles) {
+  return apiPost('/api/files/sync', { files: clientFiles })
+}
+
 export async function writeFile(path, content, encoding) {
   return apiPost('/api/files/write', { path, content, encoding })
 }

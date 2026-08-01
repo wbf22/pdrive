@@ -108,6 +108,26 @@ export async function updateCachedContent(path, content) {
   return waitTx(tx)
 }
 
+export async function markSynced(path, serverMtime) {
+  const db = await openDB()
+  const tx = db.transaction('files', 'readwrite')
+  const store = tx.objectStore('files')
+  const existing = await new Promise((resolve, reject) => {
+    const req = store.get(path)
+    req.onsuccess = () => resolve(req.result)
+    req.onerror = () => reject(req.error)
+  })
+  if (!existing) return waitTx(tx)
+  store.put({
+    ...existing,
+    serverMtime: serverMtime !== undefined ? serverMtime : existing.serverMtime,
+    synced: true,
+    pendingAction: null,
+    localMtime: Date.now(),
+  })
+  return waitTx(tx)
+}
+
 export async function addPendingAction(action) {
   const db = await openDB()
   const tx = db.transaction('pending', 'readwrite')
