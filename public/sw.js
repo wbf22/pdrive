@@ -1,5 +1,9 @@
-const CACHE_NAME = 'pdrive-v11'
-const ASSETS_TO_CACHE = [
+const VERSION = 'pdrive-v12'
+const CACHE_NAME = `pdrive-${VERSION}`
+
+// App shell precached on install so the first offline load works.
+// New app files don't need to be added here — they're cached on first use.
+const APP_SHELL = [
   '/',
   '/index.html',
   '/styles.css',
@@ -30,26 +34,60 @@ const ASSETS_TO_CACHE = [
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS_TO_CACHE))
+    caches.open(CACHE_NAME)
+      .then(cache => Promise.allSettled(APP_SHELL.map(url => cache.add(url))))
+      .then(() => self.skipWaiting())
   )
-  self.skipWaiting()
 })
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then(keys =>
-      Promise.all(keys.map(k => { if (k !== CACHE_NAME) return caches.delete(k) }))
-    )
+    caches.keys()
+      .then(keys => Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k))))
+      .then(() => self.clients.claim())
   )
-  self.clients.claim()
 })
 
+const isSameOrigin = (url) => url.startsWith(self.location.origin)
+const isApiRequest = (url) => url.includes('/api/')
+
 self.addEventListener('fetch', (event) => {
-  if (event.request.url.startsWith(self.location.origin)) {
+  const { request } = event
+  if (request.method !== 'GET' || !isSameOrigin(request.url)) return
+  // API calls are dynamic and token-scoped — never cache, always network.
+  if (isApiRequest(request.url)) return
+
+  // Page navigations: network-first, cached fallback.
+  // Opens the app online → always gets the latest HTML.
+  if (request.mode === 'navigate') {
     event.respondWith(
-      caches.match(event.request).then(cached =>
-        cached || fetch(event.request)
-      )
+      fetch(request)
+        .then((response) => {
+          if (response && response.status === 200) {
+            const copy = response.clone()
+            caches.open(CACHE_NAME).then(cache => cache.put(request, copy))
+          }
+          return response
+        })
+        .catch(() => caches.match(request).then(r => r || caches.match('/index.html')))
     )
+    return
   }
+
+  // Static assets: stale-while-revalidate.
+  // Serve from cache instantly, refresh it from the network in the background.
+  event.respondWith(
+    caches.match(request).then((cached) => {
+      const network = fetch(request)
+        .then((response) => {
+          if (response && response.status === 200 && response.type === 'basic') {
+            const copy = response.clone()
+            caches.open(CACHE_NAME).then(cache => cache.put(request, copy))
+          }
+          return response
+        })
+        .catch(() => cached)
+      return cached || network
+    })
+  )
 })

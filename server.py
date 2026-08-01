@@ -18,8 +18,10 @@ import hmac
 import base64
 import socket
 import shutil
+import ssl
 import mimetypes
 import argparse
+import threading
 import urllib.parse
 import http.server
 import socketserver
@@ -658,6 +660,76 @@ def _parse_multipart(body: bytes, boundary: str) -> tuple[bytes | None, str | No
     return None, None
 
 
+# ── Local CA delivery (phone setup) ─────────────────────────────────
+# HTTPS is required for service workers / PWA install. This tiny plain-HTTP
+# endpoint hands out the CA certificate so a phone can trust your local
+# HTTPS setup. The CA itself is public (no secret), so serving it freely is fine.
+CA_INDEX_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDrive — install local CA</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:640px;margin:2rem auto;padding:0 1rem;line-height:1.5}
+code{background:#f0f0f0;padding:2px 6px;border-radius:4px}
+li{margin:.6rem 0}
+</style>
+</head>
+<body>
+<h1>PDrive local HTTPS setup</h1>
+<p>Your phone trusts this server over HTTPS only after you install its root certificate.</p>
+<ol>
+<li><a href="/pdrive-ca.crt">Download the PDrive CA certificate</a></li>
+<li>Open the downloaded file and install it as a <b>CA certificate</b>
+(Settings &rarr; Security &rarr; Encryption &amp; credentials &rarr;
+Install a certificate &rarr; CA certificate).</li>
+<li><b>Firefox only:</b> Settings &rarr; About Firefox, tap the Firefox logo
+7 times, open <b>Secret Settings</b>, and enable
+<b>Use third party CA certificates</b>. (Chrome needs no extra step.)</li>
+<li>Now open the HTTPS address of PDrive and it can be installed as an app.</li>
+</ol>
+</body>
+</html>
+"""
+
+
+class _CAHandler(http.server.BaseHTTPRequestHandler):
+    ca_cert_path = ""
+
+    def log_message(self, fmt, *args):
+        sys.stderr.write("[PDrive-CA] %s - %s\n" % (self.client_address[0], fmt % args))
+
+    def _send(self, code, body, ctype):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        path = urllib.parse.urlparse(self.path).path
+        if path in ("/", "/index.html"):
+            self._send(200, CA_INDEX_PAGE.encode("utf-8"), "text/html; charset=utf-8")
+        elif path == "/pdrive-ca.crt":
+            if not self.ca_cert_path or not os.path.isfile(self.ca_cert_path):
+                self._send(404, b"CA certificate not configured on this server",
+                           "text/plain; charset=utf-8")
+                return
+            with open(self.ca_cert_path, "rb") as f:
+                body = f.read()
+            self._send(200, body, "application/x-x509-ca-cert")
+        else:
+            self._send(404, b"Not found", "text/plain; charset=utf-8")
+
+
+def _start_ca_server(ca_cert_path: str, ca_port: int):
+    _CAHandler.ca_cert_path = ca_cert_path
+    ca_httpd = socketserver.ThreadingTCPServer(("0.0.0.0", ca_port), _CAHandler)
+    threading.Thread(target=ca_httpd.serve_forever, daemon=True).start()
+    return ca_httpd
+
+
 # ── Main ────────────────────────────────────────────────────────────
 def main():
     global PASSWORD, PORT, ROOT
@@ -669,6 +741,16 @@ def main():
                         help=f"Root directory (default: {ROOT}, env: PDRIVE_ROOT)")
     parser.add_argument("--password", type=str, default=None,
                         help="Auth password (env: PDRIVE_PASSWORD)")
+    parser.add_argument("--cert", type=str, default=None,
+                        help="TLS certificate (PEM) to serve PDrive over HTTPS. "
+                             "Generate one with ./make_certs.sh")
+    parser.add_argument("--key", type=str, default=None,
+                        help="TLS private key (PEM) matching --cert")
+    parser.add_argument("--ca-cert", type=str, default=None,
+                        help="CA certificate served over HTTP so phones can "
+                             "trust your HTTPS setup")
+    parser.add_argument("--ca-port", type=int, default=None,
+                        help=f"HTTP port for the CA certificate (default: {PORT + 1})")
     args = parser.parse_args()
 
     if args.password:
@@ -683,20 +765,47 @@ def main():
         print("Set it via environment variable or --password flag.", file=sys.stderr)
         sys.exit(1)
 
+    if bool(args.cert) != bool(args.key):
+        print("ERROR: --cert and --key must be provided together.", file=sys.stderr)
+        sys.exit(1)
+    if args.cert:
+        for f in (args.cert, args.key):
+            if not os.path.isfile(f):
+                print(f"ERROR: TLS file not found: {f}", file=sys.stderr)
+                print("Generate certificates first with ./make_certs.sh", file=sys.stderr)
+                sys.exit(1)
+
     ROOT = os.path.abspath(ROOT)
     os.makedirs(ROOT, exist_ok=True)
     ensure_upload_dir()
 
-    server = socketserver.TCPServer(("0.0.0.0", PORT), PDriveHandler)
+    socketserver.ThreadingTCPServer.allow_reuse_address = True
+
+    ca_httpd = None
+    ca_port = None
+    if args.ca_cert:
+        ca_port = args.ca_port or (PORT + 1)
+        ca_httpd = _start_ca_server(args.ca_cert, ca_port)
+
+    server = socketserver.ThreadingTCPServer(("0.0.0.0", PORT), PDriveHandler)
+
+    scheme = "http"
+    if args.cert:
+        scheme = "https"
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(certfile=args.cert, keyfile=args.key)
+        server.socket = ctx.wrap_socket(server.socket, server_side=True)
 
     local_ip = get_local_ip()
     hostname = socket.gethostname()
 
-    print(f" PDrive Backend running on http://0.0.0.0:{PORT}")
+    print(f" PDrive Backend running on {scheme}://0.0.0.0:{PORT}")
     print(f" Root: {ROOT}")
     print(f" Password: {'set' if PASSWORD else 'NOT SET!'}")
     print(f" Upload temp: {UPLOAD_DIR}")
-    print(f" Local:   http://{local_ip}:{PORT}")
+    print(f" Local:   {scheme}://{local_ip}:{PORT}")
+    if ca_httpd:
+        print(f" CA setup: http://{local_ip}:{ca_port}  (install this CA on each phone once)")
     print()
 
     # Optional mDNS registration
@@ -724,6 +833,9 @@ def main():
     except KeyboardInterrupt:
         print("\nShutting down...")
     finally:
+        if ca_httpd:
+            ca_httpd.shutdown()
+            ca_httpd.server_close()
         if zc:
             zc.close()
         server.server_close()
