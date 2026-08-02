@@ -73,6 +73,13 @@ class PDriveApp {
       this.sidebar.classList.toggle('open')
     })
 
+    // On mobile, tapping the main view closes the explorer drawer.
+    this.editorContainer.addEventListener('click', () => {
+      if (window.matchMedia('(max-width: 768px)').matches) {
+        this.sidebar.classList.remove('open')
+      }
+    })
+
     document.getElementById('openServerSettingsBtn').addEventListener('click', () => {
       this.openServerSettings()
     })
@@ -116,8 +123,12 @@ class PDriveApp {
         this.handleContextAction(action)
       })
     })
-    document.addEventListener('click', () => {
-      if (this._ctxOpenedAt && (Date.now() - this._ctxOpenedAt) < 250) return
+    // Close the context menu when tapping/clicking anywhere outside it.
+    // Uses pointerdown so it fires even when other handlers stop propagation
+    // of the subsequent click event (e.g. tree node clicks).
+    document.addEventListener('pointerdown', e => {
+      if (this.contextMenu.classList.contains('hidden')) return
+      if (this.contextMenu.contains(e.target)) return
       this.hideContextMenu()
     })
 
@@ -1066,7 +1077,6 @@ class PDriveApp {
     this.contextMenu.style.left = `${Math.min(x, window.innerWidth - 160)}px`
     this.contextMenu.style.top = `${Math.min(y, window.innerHeight - 120)}px`
     this.contextMenu.classList.remove('hidden')
-    this._ctxOpenedAt = Date.now()
   }
 
   hideContextMenu() {

@@ -1299,6 +1299,15 @@ body {
     transform: translateX(0);
   }
 
+  .tree-node {
+    padding: 10px 14px;
+    font-size: 15px;
+  }
+
+  .tree-icon {
+    font-size: 17px;
+  }
+
   .content-header {
     gap: 8px;
     padding: 0 8px;

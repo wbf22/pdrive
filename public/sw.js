@@ -1,4 +1,4 @@
-const VERSION = 'pdrive-v24'
+const VERSION = 'pdrive-v27'
 const CACHE_NAME = `pdrive-${VERSION}`
 
 // App shell precached on install so the first offline load works.

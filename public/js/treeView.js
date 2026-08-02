@@ -16,6 +16,7 @@ export class TreeView {
     this._ghost = null
     this._dropTarget = null
     this._suppressClick = false
+    this._inertiaId = null
 
     this.container.addEventListener('pointerdown', e => this._onPointerDown(e))
     document.addEventListener('pointermove', e => this._onPointerMove(e))
@@ -26,6 +27,7 @@ export class TreeView {
   _onPointerDown(e) {
     if (e.button !== undefined && e.button !== 0) return
     this._suppressClick = false
+    this._stopInertia()
     const nodeEl = e.target.closest('.tree-node')
     if (!nodeEl) {
       this._cancelDrag()
@@ -44,6 +46,8 @@ export class TreeView {
       isTouch: e.pointerType !== 'mouse',
       armed: e.pointerType === 'mouse',
       scrolled: false,
+      vel: 0,
+      lastT: 0,
     }
     if (e.pointerType === 'mouse') {
       try { nodeEl.setPointerCapture(e.pointerId) } catch { /* ignore */ }
@@ -79,6 +83,11 @@ export class TreeView {
           this.container.scrollTop -= moveY
           c.scrolled = true
           e.preventDefault()
+          // Track a smoothed velocity (px/ms) for flick momentum.
+          const now = performance.now()
+          const dt = Math.max(1, now - c.lastT)
+          c.lastT = now
+          c.vel = c.vel * 0.8 + (moveY / dt) * 0.2
         }
         return
       }
@@ -130,6 +139,7 @@ export class TreeView {
       this._suppressClick = true
     } else if (c.scrolled) {
       this._suppressClick = true
+      if (Math.abs(c.vel) > 0.08) this._startInertia(c.vel)
     } else if (c.armed && c.isTouch) {
       // Long-press released without dragging — open the context menu.
       // (Touch only; on desktop the context menu opens via right-click.)
@@ -166,6 +176,46 @@ export class TreeView {
     if (this._longPressTimer) {
       clearTimeout(this._longPressTimer)
       this._longPressTimer = null
+    }
+  }
+
+  // Flick momentum for the emulated touch scroll. Animate scrollTop with
+  // exponential decay so a quick swipe glides instead of stopping dead.
+  _startInertia(velPxPerMs) {
+    this._stopInertia()
+    let vel = velPxPerMs * 16 // convert to px per frame
+    const step = () => {
+      vel *= 0.95
+      if (Math.abs(vel) < 0.4) {
+        this._inertiaId = null
+        return
+      }
+      const prev = this.container.scrollTop
+      this.container.scrollTop -= vel
+      const max = this.container.scrollHeight - this.container.clientHeight
+      if (this.container.scrollTop <= 0) {
+        this.container.scrollTop = 0
+        this._inertiaId = null
+        return
+      }
+      if (this.container.scrollTop >= max) {
+        this.container.scrollTop = max
+        this._inertiaId = null
+        return
+      }
+      if (this.container.scrollTop === prev) {
+        this._inertiaId = null
+        return
+      }
+      this._inertiaId = requestAnimationFrame(step)
+    }
+    this._inertiaId = requestAnimationFrame(step)
+  }
+
+  _stopInertia() {
+    if (this._inertiaId) {
+      cancelAnimationFrame(this._inertiaId)
+      this._inertiaId = null
     }
   }
 
@@ -212,6 +262,7 @@ export class TreeView {
   }
 
   setTreeData(data) {
+    this._stopInertia()
     this.treeData = data
     this.render()
   }
