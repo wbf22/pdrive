@@ -17,10 +17,16 @@ class PDriveApp {
     this.isOnline = false
     this._syncing = false
     this._syncRetryTimer = null
+    this.pendingOpenPath = null
+    this._deepLinkOpened = false
+    this.favorites = new Set()
 
     this.initDOM()
     this.initPWA()
     this.initConnectivityTracking()
+    this.initDeepLinks()
+    this.loadFavorites()
+    this.renderHomeView()
     this.initAuth()
   }
 
@@ -56,9 +62,11 @@ class PDriveApp {
     this.toastEl = document.getElementById('toast')
     this.contextMenu = document.getElementById('contextMenu')
 
-    this.fileMoveBtn = document.getElementById('fileMoveBtn')
     this.fileDeleteBtn = document.getElementById('fileDeleteBtn')
     this.fileOfflineBtn = document.getElementById('fileOfflineBtn')
+    this.fileCopyLinkBtn = document.getElementById('fileCopyLinkBtn')
+    this.fileFavBtn = document.getElementById('fileFavBtn')
+    this.homeView = document.getElementById('homeView')
     this.statusIndicator = document.getElementById('statusIndicator')
 
     document.getElementById('toggleMobileDrawer').addEventListener('click', () => {
@@ -67,6 +75,10 @@ class PDriveApp {
 
     document.getElementById('openServerSettingsBtn').addEventListener('click', () => {
       this.openServerSettings()
+    })
+
+    document.getElementById('brandHomeBtn').addEventListener('click', () => {
+      this.showHome()
     })
 
     document.getElementById('lockAppBtn').addEventListener('click', () => {
@@ -89,9 +101,10 @@ class PDriveApp {
     document.getElementById('treeRefreshBtn').addEventListener('click', () => this.loadTree())
     document.getElementById('hiddenFileInput').addEventListener('change', e => this.handleFileUpload(e))
 
-    this.fileMoveBtn.addEventListener('click', () => this.showMoveModal())
     this.fileDeleteBtn.addEventListener('click', () => this.showDeleteModal())
     this.fileOfflineBtn.addEventListener('click', () => this.toggleActiveFileOffline())
+    this.fileCopyLinkBtn.addEventListener('click', () => this.copyFileLink(this.activeFilePath))
+    this.fileFavBtn.addEventListener('click', () => this.toggleFavorite(this.activeFilePath))
     document.getElementById('loginRemember').addEventListener('change', (e) => {
       document.getElementById('pinFieldGroup').classList.toggle('hidden', !e.target.checked)
     })
@@ -103,7 +116,10 @@ class PDriveApp {
         this.handleContextAction(action)
       })
     })
-    document.addEventListener('click', () => this.hideContextMenu())
+    document.addEventListener('click', () => {
+      if (this._ctxOpenedAt && (Date.now() - this._ctxOpenedAt) < 250) return
+      this.hideContextMenu()
+    })
 
     this.serverUrlInput.addEventListener('keydown', e => {
       if (e.key === 'Enter') this.serverSubmit.click()
@@ -115,6 +131,7 @@ class PDriveApp {
     this.treeView = new TreeView(this.treeContainer, {
       onSelectFile: filePath => this.openFile(filePath),
       onContextMenu: (node, x, y) => this.showContextMenu(node, x, y),
+      onMove: (path, newPath, isDir) => this.handleTreeMove(path, newPath, isDir),
       fetchChildren: async dirPath => {
         const data = await api.listFiles(dirPath)
         const node = this.treeView.getNodeByPath(this.treeView.treeData, dirPath)
@@ -147,6 +164,285 @@ class PDriveApp {
     }
   }
 
+  // ----- Deep Links --------------------------------------------------
+  // Every document gets a stable URL. Two forms:
+  //   /d/<path>  — manifest-less page: Firefox offers "Add to Home screen"
+  //                (a URL shortcut) instead of "Install", so home-screen
+  //                shortcuts keep the exact URL and open the right document.
+  //   #/file/<path> — plain in-app route (browser nav, back/forward).
+  initDeepLinks() {
+    this.pendingOpenPath = this.routeFromURL()?.path || null
+    window.addEventListener('hashchange', () => {
+      const route = this.parseRoute()
+      if (route && route.path !== this.activeFilePath) {
+        this.openFile(route.path)
+      }
+    })
+  }
+
+  routeFromURL() {
+    const path = window.location.pathname
+    if (path.startsWith('/d/')) {
+      const raw = decodeURIComponent(path.slice('/d/'.length))
+      if (!raw) return null
+      return { type: 'file', path: raw }
+    }
+    return this.parseRoute()
+  }
+
+  parseRoute() {
+    const hash = window.location.hash || ''
+    if (!hash.startsWith('#/file/')) return null
+    const raw = hash.slice('#/file/'.length)
+    if (!raw) return null
+    try {
+      const path = raw.split('/').map(s => decodeURIComponent(s)).join('/')
+      return { type: 'file', path }
+    } catch {
+      return null
+    }
+  }
+
+  encodeRoutePath(filePath) {
+    return String(filePath).split('/').map(s => encodeURIComponent(s)).join('/')
+  }
+
+  setRoute(filePath) {
+    // Stay on a /d/ deep link untouched: rewriting it would re-introduce the
+    // manifest and break the URL-preserving "Add to Home screen" shortcut.
+    if (window.location.pathname.startsWith('/d/')) return
+    const hash = filePath
+      ? '#/file/' + this.encodeRoutePath(filePath)
+      : window.location.pathname
+    history.replaceState(null, '', hash)
+  }
+
+  clearRoute() {
+    history.replaceState(null, '',
+      window.location.pathname.startsWith('/d/') ? '/' : window.location.pathname)
+  }
+
+  async maybeOpenDeepLink() {
+    if (!this.pendingOpenPath || this._deepLinkOpened) return
+    this._deepLinkOpened = true
+    const path = this.pendingOpenPath
+    this.pendingOpenPath = null
+    if (!this.isOnline) {
+      const cached = await db.getCachedFile(path)
+      if (!cached) {
+        this.showToast('This document is not available offline')
+        return
+      }
+    }
+    this.openFile(path)
+  }
+
+  async copyFileLink(filePath) {
+    if (!filePath) return
+    const url = window.location.origin + '/d/' + encodeURIComponent(filePath)
+    try {
+      await navigator.clipboard.writeText(url)
+      this.showToast('Link copied')
+    } catch {
+      try {
+        const ta = document.createElement('textarea')
+        ta.value = url
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.select()
+        document.execCommand('copy')
+        document.body.removeChild(ta)
+        this.showToast('Link copied')
+      } catch {
+        this.showToast('Could not copy link')
+      }
+    }
+  }
+
+  // ----- Favorites ---------------------------------------------------
+  loadFavorites() {
+    this.favorites = new Set()
+    try {
+      const raw = localStorage.getItem('pdrive_favorites')
+      if (raw) {
+        const arr = JSON.parse(raw)
+        if (Array.isArray(arr)) {
+          for (const p of arr) {
+            if (typeof p === 'string' && p) this.favorites.add(p)
+          }
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  saveFavorites() {
+    try {
+      localStorage.setItem('pdrive_favorites', JSON.stringify([...this.favorites]))
+    } catch { /* ignore */ }
+  }
+
+  isFavorited(filePath) {
+    return this.favorites.has(filePath)
+  }
+
+  toggleFavorite(filePath) {
+    if (!filePath) return
+    if (this.favorites.has(filePath)) {
+      this.favorites.delete(filePath)
+      this.showToast('Removed from favorites')
+    } else {
+      this.favorites.add(filePath)
+      this.showToast('Added to favorites')
+    }
+    this.saveFavorites()
+    this.updateFavBtn()
+    if (!this.activeFilePath) this.renderHomeView()
+  }
+
+  // Drop favorites for a deleted file/directory (and anything nested in it).
+  removeFavoriteForPath(path, isDir) {
+    let removed = false
+    if (isDir) {
+      const prefix = path.endsWith('/') ? path : path + '/'
+      for (const p of [...this.favorites]) {
+        if (p === path || p.startsWith(prefix)) {
+          this.favorites.delete(p)
+          removed = true
+        }
+      }
+    } else if (this.favorites.has(path)) {
+      this.favorites.delete(path)
+      removed = true
+    }
+    if (removed) {
+      this.saveFavorites()
+      if (!this.activeFilePath) this.renderHomeView()
+    }
+  }
+
+  // Rewrite favorites when a file/directory is renamed or moved.
+  moveFavoritePath(oldPath, newPath, isDir) {
+    const prefix = oldPath.endsWith('/') ? oldPath : oldPath + '/'
+    let changed = false
+    const updated = new Set()
+    for (const p of this.favorites) {
+      if (isDir && (p === oldPath || p.startsWith(prefix))) {
+        updated.add(newPath + p.slice(oldPath.length))
+        changed = true
+      } else if (!isDir && p === oldPath) {
+        updated.add(newPath)
+        changed = true
+      } else {
+        updated.add(p)
+      }
+    }
+    if (changed) {
+      this.favorites = updated
+      this.saveFavorites()
+    }
+  }
+
+  updateFavBtn() {
+    if (!this.fileFavBtn) return
+    const fav = !!this.activeFilePath && this.isFavorited(this.activeFilePath)
+    this.fileFavBtn.textContent = fav ? '★' : '☆'
+    this.fileFavBtn.title = fav ? 'Remove from favorites' : 'Star this file'
+  }
+
+  updateCtxFav() {
+    const el = document.getElementById('ctxFav')
+    if (!el || !this.ctxTarget) return
+    el.textContent = this.isFavorited(this.ctxTarget.path)
+      ? '★ Remove from Favorites'
+      : '⭐ Add to Favorites'
+  }
+
+  fileNameFromPath(filePath) {
+    return String(filePath).split('/').filter(Boolean).pop() || filePath
+  }
+
+  fileIcon(filename) {
+    const ext = filename.split('.').pop().toLowerCase()
+    switch (ext) {
+      case 'csv': return '📊'
+      case 'md': return '📝'
+      case 'png': case 'jpg': case 'jpeg': case 'gif': case 'svg': case 'webp': return '🖼️'
+      case 'pdf': return '📕'
+      case 'docx': return '📘'
+      case 'js': case 'json': case 'html': case 'css': case 'py': return '⚡'
+      default: return '📄'
+    }
+  }
+
+  // Make sure the home view element exists in the DOM (openFile may have
+  // replaced editorContainer's contents since it was last rendered).
+  ensureHomeView() {
+    if (!this.homeView || !this.editorContainer.contains(this.homeView)) {
+      this.editorContainer.innerHTML = '<div class="welcome-screen" id="homeView"></div>'
+      this.homeView = document.getElementById('homeView')
+    }
+    return this.homeView
+  }
+
+  renderHomeView() {
+    this.ensureHomeView()
+    if (!this.homeView) return
+    const favs = [...this.favorites].sort((a, b) =>
+      this.fileNameFromPath(a).localeCompare(this.fileNameFromPath(b)))
+
+    let body
+    if (favs.length === 0) {
+      body = `<p class="home-empty">No starred files yet — star a document to pin it here.</p>`
+    } else {
+      body = `<div class="fav-grid">${favs.map(p => {
+        const name = this.fileNameFromPath(p)
+        const folder = p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '/'
+        return `
+          <button class="fav-card" data-path="${this.escapeHTML(p).replace(/"/g, '&quot;')}">
+            <span class="fav-icon">${this.fileIcon(name)}</span>
+            <span class="fav-name">${this.escapeHTML(name)}</span>
+            <span class="fav-folder">${this.escapeHTML(folder)}</span>
+            <span class="fav-unstar" title="Remove from favorites">★</span>
+          </button>`
+      }).join('')}</div>`
+    }
+
+    this.homeView.innerHTML = `
+      <div class="home-inner">
+        <h2 class="home-title">⭐ Starred files</h2>
+        ${body}
+      </div>`
+
+    this.homeView.querySelectorAll('.fav-card').forEach(card => {
+      card.addEventListener('click', e => {
+        e.stopPropagation()
+        if (e.target.classList.contains('fav-unstar')) {
+          const path = card.getAttribute('data-path')
+          this.favorites.delete(path)
+          this.saveFavorites()
+          this.updateFavBtn()
+          this.renderHomeView()
+        } else {
+          this.openFile(card.getAttribute('data-path'))
+        }
+      })
+    })
+  }
+
+  // Reset the workspace to the "no active file" state and show favorites.
+  showHome() {
+    this.activeFilePath = null
+    this.fileDeleteBtn.disabled = true
+    this.fileOfflineBtn.disabled = true
+    this.fileCopyLinkBtn.disabled = true
+    this.fileFavBtn.disabled = true
+    this.updateFavBtn()
+    this.updateBreadcrumb('/')
+    this.renderHomeView()
+  }
+
+
   initConnectivityTracking() {
     window.addEventListener('online', () => this.checkConnectivityAndSync())
     window.addEventListener('offline', () => {
@@ -163,9 +459,12 @@ class PDriveApp {
     if (this.isOnline) {
       await this.syncOfflineChanges()
       await this.loadTree()
+      this.maybeOpenDeepLink()
       this.stopSyncRetry()
     } else {
       this.loadOfflineTree()
+      this.maybeOpenDeepLink()
+      if (!this.activeFilePath) this.renderHomeView()
       this.startSyncRetry()
     }
   }
@@ -176,6 +475,8 @@ class PDriveApp {
     this.updateStatusIndicator()
     await this.syncOfflineChanges()
     await this.loadTree()
+    this.maybeOpenDeepLink()
+    if (!this.activeFilePath) this.renderHomeView()
   }
 
   // Keep retrying in the background when the server is unreachable so
@@ -213,6 +514,17 @@ class PDriveApp {
 
   // ----- Auth Flow --------------------------------------------------
   async initAuth() {
+    // Auto-login with a saved (non-PIN) password so the unlock popup only
+    // appears when nothing is remembered (or the password is PIN-protected).
+    if (!api.getToken()) {
+      const saved = this.getSavedPassword()
+      if (saved && !saved.pin) {
+        try {
+          await api.login(saved.data)
+        } catch { /* server unreachable or wrong password — normal flow below */ }
+      }
+    }
+
     const url = api.loadServerUrl()
     if (!url) {
       // No saved URL — try same-origin (served from the Python server)
@@ -232,6 +544,8 @@ class PDriveApp {
         const offlineFiles = await db.getAllOfflineFiles()
         if (offlineFiles.length > 0) {
           this.loadOfflineTree()
+          this.maybeOpenDeepLink()
+          if (!this.activeFilePath) this.renderHomeView()
         } else {
           this.openServerSettings()
         }
@@ -257,6 +571,8 @@ class PDriveApp {
       const offlineFiles = await db.getAllOfflineFiles()
       if (offlineFiles.length > 0) {
         this.loadOfflineTree()
+        this.maybeOpenDeepLink()
+        if (!this.activeFilePath) this.renderHomeView()
       } else {
         this.showLogin()
       }
@@ -484,6 +800,8 @@ class PDriveApp {
     this.stopSyncRetry()
     api.setToken('')
     this.activeFilePath = null
+    this.clearRoute()
+    this.updateFavBtn()
     this.editorContainer.innerHTML = '<div class="welcome-screen"><h2>Locked</h2></div>'
     this.showLogin()
   }
@@ -577,9 +895,12 @@ class PDriveApp {
   async openFile(filePath) {
     this.activeFilePath = filePath
     this.updateBreadcrumb(filePath)
-    this.fileMoveBtn.disabled = false
+    this.setRoute(filePath)
     this.fileDeleteBtn.disabled = false
     this.fileOfflineBtn.disabled = false
+    this.fileCopyLinkBtn.disabled = false
+    this.fileFavBtn.disabled = false
+    this.updateFavBtn()
     this.sidebar.classList.remove('open')
     // Set offline button label
     db.isMarkedOffline(filePath).then(offline => {
@@ -733,9 +1054,19 @@ class PDriveApp {
       const isOffline = await db.isMarkedOffline(node.path)
       ctxOffline.textContent = isOffline ? '📥 Online Only' : '📥 Available Offline'
     }
+    const ctxCopy = document.getElementById('ctxCopyLink')
+    if (ctxCopy) ctxCopy.style.display = node.isDirectory ? 'none' : 'block'
+    const ctxFav = document.getElementById('ctxFav')
+    if (ctxFav) {
+      ctxFav.style.display = node.isDirectory ? 'none' : 'block'
+      ctxFav.textContent = this.isFavorited(node.path)
+        ? '★ Remove from Favorites'
+        : '⭐ Add to Favorites'
+    }
     this.contextMenu.style.left = `${Math.min(x, window.innerWidth - 160)}px`
     this.contextMenu.style.top = `${Math.min(y, window.innerHeight - 120)}px`
     this.contextMenu.classList.remove('hidden')
+    this._ctxOpenedAt = Date.now()
   }
 
   hideContextMenu() {
@@ -766,9 +1097,12 @@ class PDriveApp {
         const newPath = parentDir === '/' ? `/${newName}` : `${parentDir}/${newName}`
         try {
           await api.moveItem(node.path, newPath)
+          this.moveFavoritePath(node.path, newPath, isDir)
           if (this.activeFilePath === node.path) {
             this.activeFilePath = newPath
             this.updateBreadcrumb(newPath)
+            this.setRoute(newPath)
+            this.updateFavBtn()
           }
           await this.loadTree()
         } catch (err) {
@@ -786,12 +1120,10 @@ class PDriveApp {
             await db.unmarkOffline(node.path)
             this.showToast('Delete queued (will sync when connected)')
           }
+          this.removeFavoriteForPath(node.path, isDir)
           if (this.activeFilePath === node.path) {
-            this.activeFilePath = null
-            this.fileMoveBtn.disabled = true
-            this.fileDeleteBtn.disabled = true
-            this.fileOfflineBtn.disabled = true
-            this.editorContainer.innerHTML = '<div class="welcome-screen"><h2>File Deleted</h2></div>'
+            this.clearRoute()
+            this.showHome()
           }
           if (this.isOnline) {
             await this.loadTree()
@@ -802,6 +1134,10 @@ class PDriveApp {
           alert('Delete failed: ' + err.message)
         }
       })
+    } else if (action === 'fav') {
+      if (!isDir) this.toggleFavorite(node.path)
+    } else if (action === 'copylink') {
+      if (!isDir) this.copyFileLink(node.path)
     } else if (action === 'offline') {
       try {
         const alreadyOffline = await db.isMarkedOffline(node.path)
@@ -834,6 +1170,36 @@ class PDriveApp {
       } catch (err) {
         alert('Failed to toggle offline: ' + err.message)
       }
+    }
+  }
+
+  async handleTreeMove(oldPath, newPath, isDir) {
+    if (!this.isOnline) {
+      alert('Cannot move while offline — connect to the server first')
+      return
+    }
+    this.hideContextMenu()
+    try {
+      await api.moveItem(oldPath, newPath)
+      this.showToast('Item moved')
+      this.moveFavoritePath(oldPath, newPath, isDir)
+      if (this.activeFilePath === oldPath) {
+        this.activeFilePath = newPath
+        this.updateBreadcrumb(newPath)
+        this.setRoute(newPath)
+        this.updateFavBtn()
+      }
+      await this.loadTree()
+      // Expand the destination folder so the moved item is visible.
+      const destDir = newPath.substring(0, newPath.lastIndexOf('/')) || '/'
+      this.treeView.expandedPaths.add(destDir)
+      const destNode = this.treeView.getNodeByPath(this.treeView.treeData, destDir)
+      if (destNode && !(destNode.children && destNode.children.length)) {
+        if (this.treeView.fetchChildren) await this.treeView.fetchChildren(destDir)
+      }
+      this.treeView.render()
+    } catch (err) {
+      alert('Move failed: ' + err.message)
     }
   }
 
@@ -902,42 +1268,15 @@ class PDriveApp {
     event.target.value = ''
   }
 
-  showMoveModal() {
-    if (!this.activeFilePath) return
-    this.actionTitle.textContent = '🔀 Move / Rename'
-    this.actionBody.innerHTML = `
-      <div class="input-group">
-        <label>New destination path</label>
-        <input type="text" id="moveInput" value="${this.escapeHTML(this.activeFilePath)}" />
-      </div>`
-    this.actionFooter.innerHTML = `<button class="btn btn-primary" id="confirmMoveBtn">Move</button>`
-    this.actionModal.classList.remove('hidden')
-    document.getElementById('confirmMoveBtn').onclick = async () => {
-      const newPath = document.getElementById('moveInput').value.trim()
-      if (!newPath || newPath === this.activeFilePath) return
-      try {
-        await api.moveItem(this.activeFilePath, newPath)
-        this.actionModal.classList.add('hidden')
-        this.showToast('Item moved')
-        this.activeFilePath = newPath
-        this.updateBreadcrumb(newPath)
-        await this.loadTree()
-      } catch (e) { alert('Move failed: ' + e.message) }
-    }
-    setTimeout(() => document.getElementById('moveInput')?.focus(), 100)
-  }
-
   showDeleteModal() {
     if (!this.activeFilePath) return
     this.showConfirm('Delete File', `Delete "${this.activeFilePath}"?`, async () => {
       try {
         await api.deleteItem(this.activeFilePath, false)
         this.showToast('File deleted')
-        this.activeFilePath = null
-        this.fileMoveBtn.disabled = true
-        this.fileDeleteBtn.disabled = true
-        this.fileOfflineBtn.disabled = true
-        this.editorContainer.innerHTML = '<div class="welcome-screen"><h2>File Deleted</h2></div>'
+        this.removeFavoriteForPath(this.activeFilePath, false)
+        this.clearRoute()
+        this.showHome()
         await this.loadTree()
       } catch (e) { alert('Delete failed: ' + e.message) }
     })
@@ -1129,12 +1468,10 @@ class PDriveApp {
       )
       if (remove) {
         await db.unmarkOffline(path)
+        this.removeFavoriteForPath(path, false)
         if (this.activeFilePath === path) {
-          this.activeFilePath = null
-          this.fileMoveBtn.disabled = true
-          this.fileDeleteBtn.disabled = true
-          this.fileOfflineBtn.disabled = true
-          this.editorContainer.innerHTML = '<div class="welcome-screen"><h2>Deleted on Server</h2></div>'
+          this.clearRoute()
+          this.showHome()
         }
         this.showToast('Removed from device')
       }

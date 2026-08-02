@@ -133,10 +133,10 @@
     <header class="app-navbar">
       <div class="nav-left">
         <button class="icon-btn mobile-menu-toggle" id="toggleMobileDrawer" title="Toggle File Tree">☰</button>
-        <div class="brand">
+        <button class="brand" id="brandHomeBtn" title="Home">
           <span class="brand-logo">☁️</span>
           <span class="brand-title">PDrive</span>
-        </div>
+        </button>
       </div>
 
       <div class="nav-center">
@@ -172,27 +172,15 @@
             <span class="crumb">Root</span>
           </div>
           <div class="file-actions" id="activeFileActions">
-            <button class="btn btn-sm btn-outline" id="fileMoveBtn" disabled>Move</button>
+            <button class="btn btn-sm btn-outline" id="fileFavBtn" disabled title="Star this file">☆</button>
+            <button class="btn btn-sm btn-outline" id="fileCopyLinkBtn" disabled title="Copy link to this file">🔗 Link</button>
             <button class="btn btn-sm btn-outline" id="fileOfflineBtn" disabled>Offline</button>
             <button class="btn btn-sm btn-danger" id="fileDeleteBtn" disabled>Delete</button>
           </div>
         </div>
 
         <div class="view-container" id="editorContainer">
-          <div class="welcome-screen">
-            <div class="welcome-card">
-              <h2>Welcome to PDrive</h2>
-              <p>A Google Drive-style file manager for your remote host.</p>
-              <div class="welcome-features">
-                <div class="feature-item">📊 CSV Editor with custom formulas</div>
-                <div class="feature-item">📝 Live Markdown Editor & Render</div>
-                <div class="feature-item">🖼️ Responsive Image Viewer & Editor</div>
-                <div class="feature-item">📁 Chunked uploads for large files</div>
-                <div class="feature-item">📕 PDF Viewer with page navigation</div>
-                <div class="feature-item">📘 DOCX Document Viewer</div>
-              </div>
-            </div>
-          </div>
+          <div class="welcome-screen" id="homeView"></div>
         </div>
       </main>
     </div>
@@ -201,6 +189,8 @@
   <!-- Context Menu -->
   <div id="contextMenu" class="context-menu hidden">
     <button class="ctx-item" data-action="rename">✏️ Rename</button>
+    <button class="ctx-item" data-action="fav" id="ctxFav">⭐ Add to Favorites</button>
+    <button class="ctx-item" data-action="copylink" id="ctxCopyLink">🔗 Copy Link</button>
     <button class="ctx-item" data-action="offline" id="ctxOffline">📥 Offline</button>
     <div class="ctx-divider"></div>
     <button class="ctx-item ctx-item-danger" data-action="delete">🗑️ Delete</button>

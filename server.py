@@ -323,6 +323,13 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
         if path == "/api/files/download":
             return self._handle_download(parsed.query)
 
+        # Deep-link pages (/d/<path>) are served WITHOUT the web app manifest
+        # link. Firefox then offers "Add to Home screen" (a URL shortcut)
+        # instead of "Install", so the shortcut preserves the exact URL and
+        # opens the right document instead of the app root.
+        if path.startswith("/d/"):
+            return self._serve_deep_link()
+
         # Static files — serve the SPA for any non-API path
         if not path.startswith("/api/"):
             return self._serve_static(path)
@@ -359,6 +366,23 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
     # -- Handlers -----------------------------------------------------
     def _handle_health(self):
         self._send_json(200, {"status": "ok", "server": "pdrive"})
+
+    def _serve_deep_link(self):
+        """Serve the SPA for a /d/<path> deep link, minus the manifest tag.
+
+        A page without <link rel="manifest"> is not installable, so Firefox's
+        "Add to Home screen" creates a shortcut to the exact URL (with the
+        document path) instead of installing the app at start_url="/".
+        """
+        index_path = os.path.join(PUBLIC_DIR, "index.html")
+        try:
+            with open(index_path, "r", encoding="utf-8") as f:
+                html = f.read()
+        except OSError:
+            return self._send_error(500, "index.html missing")
+        html = re.sub(r'<link\s+rel="manifest"[^>]*>', '', html, count=1)
+        body = html.encode("utf-8")
+        self._send_binary(200, body, "text/html; charset=utf-8")
 
     def _handle_login(self):
         body = self._parse_json_body()
