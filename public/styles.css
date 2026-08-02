@@ -501,9 +501,23 @@ body {
   cursor: cell;
 }
 
+.csv-cell.wrapped {
+  white-space: pre-wrap;
+  word-break: break-word;
+  height: auto;
+}
+
 .csv-cell.selected {
   outline: 2px solid var(--primary);
   background-color: rgba(137, 180, 250, 0.15);
+}
+
+.csv-cell.range-selected {
+  background-color: rgba(137, 180, 250, 0.30);
+}
+
+.csv-selecting {
+  touch-action: none;
 }
 
 .csv-inline-input {

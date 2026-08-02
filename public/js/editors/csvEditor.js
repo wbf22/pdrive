@@ -4,15 +4,20 @@
 import { attachPinchZoom } from '../pinchZoom.js';
 
 export class CSVEditor {
-  constructor(container, onSave) {
+  constructor(container, onSave, onNotify) {
     this.container = container;
     this.onSave = onSave;
+    this.onNotify = onNotify;
     this.grid = []; // 2D array of raw values [row][col]
     this.formulas = {}; // { 'c4': 'b4*1' }
     this.styles = {}; // { 'b6': { color: '13,115,30' } }
     this.metaLines = []; // preserves any unknown <meta> tags
-    this.selectedCell = null; // { r, c }
+    this.selectedCell = null; // { r, c } — active/cursor cell
+    this.anchor = null; // { r, c } — selection start point
+    this.selection = null; // { r1, c1, r2, c2 } normalized; null = single cell
     this.zoom = 1;
+    this._cellGesture = null;
+    this._suppressClick = false;
   }
 
   // Parse CSV string into grid, formulas, styles
@@ -81,7 +86,7 @@ export class CSVEditor {
   }
 
   parseMetaLine(line) {
-    // e.g., <meta> c4=b4*1  OR  <meta> color b6=13,115,30
+    // e.g., <meta> c4=b4*1  OR  <meta> color b6=13,115,30  OR  <meta> wrap a2
     const content = line.substring(6).trim();
     if (content.toLowerCase().startsWith('color ')) {
       const parts = content.substring(6).split('=');
@@ -90,6 +95,9 @@ export class CSVEditor {
         const colorVal = parts[1].trim();
         this.styles[cell] = { ...(this.styles[cell] || {}), color: colorVal };
       }
+    } else if (content.toLowerCase().startsWith('wrap ')) {
+      const cell = content.substring(5).trim().toLowerCase();
+      this.styles[cell] = { ...(this.styles[cell] || {}), wrap: true };
     } else if (content.includes('=')) {
       const parts = content.split('=');
       const cell = parts[0].trim().toLowerCase();
@@ -185,6 +193,9 @@ export class CSVEditor {
           </div>
           <div class="csv-actions">
             <input type="color" id="csvColorPicker" title="Cell Text Color" value="#00ffaa" />
+            <button class="btn btn-sm" id="csvCopyBtn" title="Copy selection (TSV)">Copy</button>
+            <button class="btn btn-sm" id="csvPasteBtn" title="Paste from clipboard">Paste</button>
+            <button class="btn btn-sm" id="csvWrapBtn" title="Wrap text in this cell">Wrap</button>
             <button class="btn btn-sm" id="csvAddRowBtn">+ Row</button>
             <button class="btn btn-sm" id="csvAddColBtn">+ Col</button>
             <button class="btn btn-primary btn-sm" id="csvSaveBtn">Save CSV</button>
@@ -223,6 +234,9 @@ export class CSVEditor {
     this.container.querySelector('#csvAddRowBtn').addEventListener('click', () => this.addRow());
     this.container.querySelector('#csvAddColBtn').addEventListener('click', () => this.addCol());
     this.container.querySelector('#csvSaveBtn').addEventListener('click', () => this.save());
+    this.container.querySelector('#csvCopyBtn').addEventListener('click', () => this.copySelection());
+    this.container.querySelector('#csvPasteBtn').addEventListener('click', () => this.pasteSelection());
+    this.container.querySelector('#csvWrapBtn').addEventListener('click', () => this.toggleWrap());
     this.colorPicker.addEventListener('change', (e) => this.onColorChange(e.target.value));
     this.container.querySelector('#csvZoomIn').addEventListener('click', () => this.setZoom(this.zoom + 0.1));
     this.container.querySelector('#csvZoomOut').addEventListener('click', () => this.setZoom(this.zoom - 0.1));
@@ -244,6 +258,84 @@ export class CSVEditor {
 
     // Default select A1
     this.selectCell(0, 0);
+
+    this._setupSelectionGesture();
+    this._setupKeyboard();
+  }
+
+  _setupSelectionGesture() {
+    this._teardownSelectionGesture();
+    this._containerPointerDown = (e) => this._gridPointerDown(e);
+    this._onGridPointerMove = (e) => this._gridPointerMove(e);
+    this._onGridPointerUp = (e) => this._gridPointerUp(e);
+    this._onSecondPointerDown = (e) => {
+      if (this._cellGesture && e.pointerId !== this._cellGesture.pointerId) {
+        this._cancelCellGesture();
+      }
+    };
+    this.tableContainer.addEventListener('pointerdown', this._containerPointerDown);
+    document.addEventListener('pointermove', this._onGridPointerMove);
+    document.addEventListener('pointerup', this._onGridPointerUp);
+    document.addEventListener('pointercancel', this._onGridPointerUp);
+    document.addEventListener('pointerdown', this._onSecondPointerDown);
+  }
+
+  _teardownSelectionGesture() {
+    if (this.tableContainer && this._containerPointerDown) {
+      this.tableContainer.removeEventListener('pointerdown', this._containerPointerDown);
+    }
+    document.removeEventListener('pointermove', this._onGridPointerMove);
+    document.removeEventListener('pointerup', this._onGridPointerUp);
+    document.removeEventListener('pointercancel', this._onGridPointerUp);
+    document.removeEventListener('pointerdown', this._onSecondPointerDown);
+  }
+
+  _setupKeyboard() {
+    this._keydownHandler = (e) => this._handleKeydown(e);
+    document.removeEventListener('keydown', this._keydownHandler);
+    document.addEventListener('keydown', this._keydownHandler);
+  }
+
+  // ----- Range selection model ---------------------------------------
+
+  _isInSelection(r, c) {
+    if (!this.selection) return false;
+    return r >= this.selection.r1 && r <= this.selection.r2 &&
+           c >= this.selection.c1 && c <= this.selection.c2;
+  }
+
+  _getSelectionRect() {
+    if (this.selection) return this.selection;
+    const { r, c } = this.selectedCell;
+    return { r1: r, c1: c, r2: r, c2: c };
+  }
+
+  _applySelectionUI() {
+    if (this.tableBody) {
+      this.tableBody.querySelectorAll('.csv-cell').forEach(cell => {
+        const r = parseInt(cell.getAttribute('data-r'));
+        const c = parseInt(cell.getAttribute('data-c'));
+        cell.classList.toggle('range-selected', this._isInSelection(r, c));
+        cell.classList.toggle('selected', !!this.selectedCell && this.selectedCell.r === r && this.selectedCell.c === c);
+      });
+    }
+    if (!this.selectedCell) return;
+    const { r, c } = this.selectedCell;
+    const cellName = `${this.colToName(c)}${r + 1}`;
+    if (this.cellRefDisplay) this.cellRefDisplay.textContent = cellName;
+    if (this.formulaInput) this.formulaInput.value = this.getRawValue(r, c);
+    const cellRef = `${this.colToName(c).toLowerCase()}${r + 1}`;
+    const wrapBtn = this.container.querySelector('#csvWrapBtn');
+    if (wrapBtn) {
+      wrapBtn.classList.toggle('active', !!(this.styles[cellRef] && this.styles[cellRef].wrap));
+    }
+  }
+
+  _collapseSelection() {
+    if (!this.selection) return;
+    this.selection = null;
+    this.anchor = this.selectedCell;
+    this._applySelectionUI();
   }
 
   setZoom(newZoom, clientX, clientY) {
@@ -281,11 +373,15 @@ export class CSVEditor {
         const displayVal = this.getDisplayValue(r, c);
         const styleObj = this.styles[cellRef];
         let styleAttr = '';
+        let cellClass = 'csv-cell';
         if (styleObj && styleObj.color) {
           styleAttr = `style="color: rgb(${styleObj.color})"`;
         }
+        if (styleObj && styleObj.wrap) {
+          cellClass += ' wrapped';
+        }
 
-        bodyHTML += `<td class="csv-cell" data-r="${r}" data-c="${c}" ${styleAttr}>${this.escapeHTML(displayVal)}</td>`;
+        bodyHTML += `<td class="${cellClass}" data-r="${r}" data-c="${c}" ${styleAttr}>${this.escapeHTML(displayVal)}</td>`;
       }
       bodyHTML += '</tr>';
     }
@@ -295,8 +391,17 @@ export class CSVEditor {
     const cells = this.tableBody.querySelectorAll('.csv-cell');
     cells.forEach(cell => {
       cell.addEventListener('click', (e) => {
+        if (this._suppressClick) {
+          this._suppressClick = false;
+          return;
+        }
         const r = parseInt(cell.getAttribute('data-r'));
         const c = parseInt(cell.getAttribute('data-c'));
+        if (e.shiftKey) {
+          this._commitInlineEdit();
+          this.selectCell(r, c, true);
+          return;
+        }
         this.selectCell(r, c);
         this.startDirectEdit(cell, r, c);
       });
@@ -310,25 +415,27 @@ export class CSVEditor {
     table.style.width = tableMin + 'px';
   }
 
-  selectCell(r, c) {
-    if (this.selectedCell) {
-      const prev = this.tableBody.querySelector(`.csv-cell[data-r="${this.selectedCell.r}"][data-c="${this.selectedCell.c}"]`);
-      if (prev) prev.classList.remove('selected');
+  selectCell(r, c, extend = false) {
+    if (extend && this.anchor) {
+      this.selection = {
+        r1: Math.min(this.anchor.r, r),
+        c1: Math.min(this.anchor.c, c),
+        r2: Math.max(this.anchor.r, r),
+        c2: Math.max(this.anchor.c, c),
+      };
+    } else {
+      this.anchor = { r, c };
+      this.selection = null;
     }
-
     this.selectedCell = { r, c };
-    const current = this.tableBody.querySelector(`.csv-cell[data-r="${r}"][data-c="${c}"]`);
-    if (current) current.classList.add('selected');
-
-    const cellName = `${this.colToName(c)}${r + 1}`;
-    this.cellRefDisplay.textContent = cellName;
-    this.formulaInput.value = this.getRawValue(r, c);
+    this._applySelectionUI();
   }
 
   startDirectEdit(tdCell, r, c) {
     const rawVal = this.getRawValue(r, c);
     tdCell.innerHTML = `<input type="text" class="csv-inline-input" value="${this.escapeHTML(rawVal)}" />`;
     const input = tdCell.querySelector('input');
+    this._activeInlineInput = input;
     input.focus();
     input.select();
 
@@ -351,6 +458,7 @@ export class CSVEditor {
 
     input.addEventListener('blur', () => {
       if (!navigating) commitEdit(input.value);
+      if (this._activeInlineInput === input) this._activeInlineInput = null;
     });
 
     input.addEventListener('keydown', (e) => {
@@ -412,18 +520,49 @@ export class CSVEditor {
     this.refreshGrid();
   }
 
+  toggleWrap() {
+    if (!this.selectedCell) return;
+    const { r1, c1, r2, c2 } = this._getSelectionRect();
+    const refs = [];
+    let allWrapped = true;
+    for (let r = r1; r <= r2; r++) {
+      for (let c = c1; c <= c2; c++) {
+        const cellRef = `${this.colToName(c).toLowerCase()}${r + 1}`;
+        refs.push(cellRef);
+        if (!(this.styles[cellRef] && this.styles[cellRef].wrap)) allWrapped = false;
+      }
+    }
+    for (const cellRef of refs) {
+      const styleObj = this.styles[cellRef] || {};
+      if (allWrapped) {
+        const { wrap, ...rest } = styleObj;
+        if (Object.keys(rest).length) this.styles[cellRef] = rest;
+        else delete this.styles[cellRef];
+      } else {
+        this.styles[cellRef] = { ...styleObj, wrap: true };
+      }
+    }
+    this.refreshGrid();
+    this.onNotify?.(`Wrap ${allWrapped ? 'off' : 'on'} for ${refs.length} cell${refs.length === 1 ? '' : 's'}`);
+  }
+
   onColorChange(hexColor) {
     if (!this.selectedCell) return;
-    const { r, c } = this.selectedCell;
-    const cellRef = `${this.colToName(c).toLowerCase()}${r + 1}`;
-
-    // Convert hex to r,g,b
     const rVal = parseInt(hexColor.slice(1, 3), 16);
     const gVal = parseInt(hexColor.slice(3, 5), 16);
     const bVal = parseInt(hexColor.slice(5, 7), 16);
 
-    this.styles[cellRef] = { ...(this.styles[cellRef] || {}), color: `${rVal},${gVal},${bVal}` };
+    const { r1, c1, r2, c2 } = this._getSelectionRect();
+    let count = 0;
+    for (let r = r1; r <= r2; r++) {
+      for (let c = c1; c <= c2; c++) {
+        const cellRef = `${this.colToName(c).toLowerCase()}${r + 1}`;
+        this.styles[cellRef] = { ...(this.styles[cellRef] || {}), color: `${rVal},${gVal},${bVal}` };
+        count++;
+      }
+    }
     this.refreshGrid();
+    this.onNotify?.(`Colored ${count} cell${count === 1 ? '' : 's'}`);
   }
 
   updateCellValue(r, c, val) {
@@ -441,7 +580,7 @@ export class CSVEditor {
   refreshGrid() {
     this.buildGridUI();
     if (this.selectedCell) {
-      this.selectCell(this.selectedCell.r, this.selectedCell.c);
+      this._applySelectionUI();
     }
   }
 
@@ -457,6 +596,311 @@ export class CSVEditor {
       this.grid[r].push('');
     }
     this.refreshGrid();
+  }
+
+  // ----- Selection actions --------------------------------------------
+
+  _ensureGridSize() {
+    const minRows = Math.max(10, this.grid.length);
+    let maxCols = 10;
+    for (const row of this.grid) maxCols = Math.max(maxCols, row.length);
+    for (let r = 0; r < minRows; r++) {
+      if (!this.grid[r]) this.grid[r] = [];
+      while (this.grid[r].length < maxCols) this.grid[r].push('');
+    }
+  }
+
+  tsvEscape(v) {
+    if (v === null || v === undefined) return '';
+    v = String(v);
+    if (v.includes('\t') || v.includes('\n') || v.includes('"')) {
+      return '"' + v.replace(/"/g, '""') + '"';
+    }
+    return v;
+  }
+
+  parseTSVLine(line) {
+    const row = [];
+    let insideQuote = false;
+    let entry = '';
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === '"') {
+        if (insideQuote && line[i + 1] === '"') {
+          entry += '"';
+          i++;
+        } else {
+          insideQuote = !insideQuote;
+        }
+      } else if (c === '\t' && !insideQuote) {
+        row.push(entry);
+        entry = '';
+      } else {
+        entry += c;
+      }
+    }
+    row.push(entry);
+    return row;
+  }
+
+  _writeClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(() => this._legacyCopy(text));
+    } else {
+      this._legacyCopy(text);
+    }
+  }
+
+  _legacyCopy(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch { /* ignore */ }
+    ta.remove();
+  }
+
+  copySelection() {
+    if (!this.selectedCell) return;
+    const { r1, c1, r2, c2 } = this._getSelectionRect();
+    const lines = [];
+    for (let r = r1; r <= r2; r++) {
+      const row = [];
+      for (let c = c1; c <= c2; c++) {
+        row.push(this.tsvEscape(this.getRawValue(r, c)));
+      }
+      lines.push(row.join('\t'));
+    }
+    this._writeClipboard(lines.join('\n'));
+    const count = (r2 - r1 + 1) * (c2 - c1 + 1);
+    this.onNotify?.(`Copied ${count} cell${count === 1 ? '' : 's'}`);
+  }
+
+  async pasteSelection() {
+    if (!this.selectedCell) return;
+    let tsv = null;
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      try { tsv = await navigator.clipboard.readText(); } catch { tsv = null; }
+    }
+    if (!tsv) {
+      this.onNotify?.('Clipboard is empty or unavailable');
+      return;
+    }
+    const rows = tsv.split(/\r?\n/);
+    const { r: ar, c: ac } = this.selectedCell;
+    let written = 0;
+    for (let dr = 0; dr < rows.length; dr++) {
+      const values = this.parseTSVLine(rows[dr]);
+      for (let dc = 0; dc < values.length; dc++) {
+        const r = ar + dr;
+        const c = ac + dc;
+        while (this.grid.length <= r) this.grid.push([]);
+        this.grid[r][c] = '';
+        this.updateCellValue(r, c, values[dc]);
+        written++;
+      }
+    }
+    this._ensureGridSize();
+    this.refreshGrid();
+    this.onNotify?.(`Pasted ${written} cell${written === 1 ? '' : 's'}`);
+  }
+
+  clearSelection() {
+    if (!this.selectedCell) return;
+    const { r1, c1, r2, c2 } = this._getSelectionRect();
+    let count = 0;
+    for (let r = r1; r <= r2; r++) {
+      for (let c = c1; c <= c2; c++) {
+        this.updateCellValue(r, c, '');
+        count++;
+      }
+    }
+    this.refreshGrid();
+    this.onNotify?.(`Cleared ${count} cell${count === 1 ? '' : 's'}`);
+  }
+
+  cutSelection() {
+    this.copySelection();
+    this.clearSelection();
+  }
+
+  selectAll() {
+    const numRows = this.grid.length;
+    const numCols = this.grid[0] ? this.grid[0].length : 0;
+    if (!numRows || !numCols) return;
+    this.anchor = { r: 0, c: 0 };
+    this.selection = { r1: 0, c1: 0, r2: numRows - 1, c2: numCols - 1 };
+    this.selectedCell = { r: numRows - 1, c: numCols - 1 };
+    this._applySelectionUI();
+  }
+
+  _commitInlineEdit() {
+    if (this._activeInlineInput) {
+      const input = this._activeInlineInput;
+      this._activeInlineInput = null;
+      if (input.isConnected) input.blur();
+    }
+  }
+
+  _handleKeydown(e) {
+    if (!this.container || !document.body.contains(this.container)) return;
+    const editing = e.target && e.target.tagName === 'INPUT';
+    const formulaBar = editing && e.target.id === 'csvFormulaInput';
+    const mod = e.ctrlKey || e.metaKey;
+    const hasRange = !!this.selection;
+
+    if (mod && (e.key === 'v' || e.key === 'V')) {
+      if (formulaBar) return; // native paste into the formula bar
+      e.preventDefault();
+      this._commitInlineEdit();
+      this.pasteSelection();
+      return;
+    }
+    if (mod && (e.key === 'c' || e.key === 'C')) {
+      if (formulaBar) return; // native copy of selected text in the formula bar
+      if (!editing || hasRange) {
+        e.preventDefault();
+        if (editing) this._commitInlineEdit();
+        this.copySelection();
+      }
+      return;
+    }
+    if (mod && (e.key === 'x' || e.key === 'X')) {
+      if (formulaBar) return;
+      if (!editing || hasRange) {
+        e.preventDefault();
+        if (editing) this._commitInlineEdit();
+        this.cutSelection();
+      }
+      return;
+    }
+    if (editing) return;
+
+    if (e.key === 'Escape') {
+      this._collapseSelection();
+      return;
+    }
+    if (mod && (e.key === 'a' || e.key === 'A')) {
+      e.preventDefault();
+      this.selectAll();
+      return;
+    }
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault();
+      this.clearSelection();
+      return;
+    }
+
+    const dirs = {
+      ArrowUp: [-1, 0],
+      ArrowDown: [1, 0],
+      ArrowLeft: [0, -1],
+      ArrowRight: [0, 1],
+    };
+    const d = dirs[e.key];
+    if (!d || !this.selectedCell) return;
+    e.preventDefault();
+    const numRows = this.grid.length;
+    const numCols = this.grid[0] ? this.grid[0].length : 0;
+    let r = this.selectedCell.r + d[0];
+    let c = this.selectedCell.c + d[1];
+    r = Math.max(0, Math.min(numRows - 1, r));
+    c = Math.max(0, Math.min(numCols - 1, c));
+    this.selectCell(r, c, e.shiftKey);
+  }
+
+  // ----- Mobile touch selection gesture -------------------------------
+
+  _gridPointerDown(e) {
+    this._suppressClick = false;
+    if (e.pointerType !== 'touch') return;
+    if (this._cellGesture) {
+      this._cancelCellGesture();
+      return;
+    }
+    this._cellGesture = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      lastX: e.clientX,
+      lastY: e.clientY,
+      armed: false,
+    };
+    const cell = e.target.closest && e.target.closest('.csv-cell');
+    const touched = cell
+      ? { r: parseInt(cell.getAttribute('data-r')), c: parseInt(cell.getAttribute('data-c')) }
+      : this.selectedCell;
+    if (touched) {
+      this.anchor = this.selection
+        ? { r: this.selectedCell.r, c: this.selectedCell.c }
+        : touched;
+    }
+    this._cellGestureTimer = setTimeout(() => this._armCellGesture(), 350);
+  }
+
+  _gridPointerMove(e) {
+    const g = this._cellGesture;
+    if (!g || e.pointerId !== g.pointerId) return;
+    g.lastX = e.clientX;
+    g.lastY = e.clientY;
+    if (!g.armed) {
+      if (Math.abs(e.clientX - g.startX) > 3 || Math.abs(e.clientY - g.startY) > 3) {
+        this._cancelCellGesture();
+      }
+      return;
+    }
+    this._extendCellToPoint(e.clientX, e.clientY);
+    this._edgeScroll(e.clientX, e.clientY);
+  }
+
+  _gridPointerUp(e) {
+    const g = this._cellGesture;
+    if (!g || e.pointerId !== g.pointerId) return;
+    this._cancelCellGesture();
+  }
+
+  _cancelCellGesture() {
+    if (this._cellGestureTimer) {
+      clearTimeout(this._cellGestureTimer);
+      this._cellGestureTimer = null;
+    }
+    if (this.tableContainer) this.tableContainer.classList.remove('csv-selecting');
+    this._cellGesture = null;
+  }
+
+  _armCellGesture() {
+    this._cellGestureTimer = null;
+    if (!this._cellGesture) return;
+    this._cellGesture.armed = true;
+    this.tableContainer.classList.add('csv-selecting');
+    this._suppressClick = true;
+    this._commitInlineEdit();
+    this._extendCellToPoint(this._cellGesture.lastX, this._cellGesture.lastY);
+  }
+
+  _extendCellToPoint(x, y) {
+    const el = document.elementFromPoint(x, y);
+    const cell = el ? el.closest('.csv-cell') : null;
+    if (!cell) return;
+    const r = parseInt(cell.getAttribute('data-r'));
+    const c = parseInt(cell.getAttribute('data-c'));
+    if (this.anchor) {
+      this.selectCell(r, c, true);
+    } else {
+      this.selectCell(r, c);
+    }
+  }
+
+  _edgeScroll(x, y) {
+    const rect = this.tableContainer.getBoundingClientRect();
+    const edge = 28;
+    const step = 14;
+    if (y < rect.top + edge) this.tableContainer.scrollTop -= step;
+    else if (y > rect.bottom - edge) this.tableContainer.scrollTop += step;
+    if (x < rect.left + edge) this.tableContainer.scrollLeft -= step;
+    else if (x > rect.right - edge) this.tableContainer.scrollLeft += step;
   }
 
   // Serialize grid, formulas, and styles back into exact CSV + <meta> format
@@ -484,6 +928,13 @@ export class CSVEditor {
     for (let [cellRef, style] of Object.entries(this.styles)) {
       if (style.color) {
         lines.push(`<meta> color ${cellRef}=${style.color}`);
+      }
+    }
+
+    // Append meta wrap markers: <meta> wrap a2
+    for (let [cellRef, style] of Object.entries(this.styles)) {
+      if (style.wrap) {
+        lines.push(`<meta> wrap ${cellRef}`);
       }
     }
 

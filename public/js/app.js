@@ -982,7 +982,7 @@ class PDriveApp {
         viewer.render(content, fileData.mime, filePath.split('/').pop())
         this.activeEditor = viewer
       } else if (ext === 'csv') {
-        const csvEd = new CSVEditor(this.editorContainer, csv => this.saveFile(csv))
+        const csvEd = new CSVEditor(this.editorContainer, csv => this.saveFile(csv), msg => this.showToast(msg))
         csvEd.render(content)
         this.activeEditor = csvEd
       } else if (ext === 'md') {
