@@ -27,6 +27,7 @@ import http.server
 import socketserver
 import pathlib
 import re
+import gzip
 
 # ── Config ──────────────────────────────────────────────────────────
 PASSWORD = os.environ.get("PDRIVE_PASSWORD", "")
@@ -49,6 +50,10 @@ MIME_MAP = {
     ".ico": "image/x-icon",
     ".webp": "image/webp",
 }
+
+# Content types worth gzip-compressing on the wire.
+COMPRESSIBLE_MARKERS = ("text/", "application/javascript",
+                        "application/json", "image/svg+xml", "image/x-icon")
 
 
 def get_local_ip() -> str:
@@ -253,11 +258,30 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
             "Access-Control-Max-Age": "86400",
         }
 
+    def _maybe_gzip(self, data: bytes, content_type: str) -> tuple[bytes, dict]:
+        """Gzip text-like payloads when the client accepts it.
+
+        Returns (payload, extra_headers). Adds Vary: Accept-Encoding so caches
+        keep the compressed and uncompressed variants separate.
+        """
+        if not data or not any(m in content_type for m in COMPRESSIBLE_MARKERS):
+            return data, {}
+        if "gzip" not in self.headers.get("Accept-Encoding", ""):
+            return data, {}
+        compressed = gzip.compress(data)
+        if len(compressed) >= len(data):
+            return data, {}
+        return compressed, {"Content-Encoding": "gzip",
+                            "Vary": "Accept-Encoding"}
+
     def _send_json(self, code: int, data):
         body = json.dumps(data).encode("utf-8")
+        body, gzip_headers = self._maybe_gzip(body, "application/json; charset=utf-8")
         headers = self._cors_headers()
         headers["Content-Type"] = "application/json; charset=utf-8"
         headers["Content-Length"] = str(len(body))
+        if gzip_headers:
+            headers.update(gzip_headers)
         self.send_response(code)
         for k, v in headers.items():
             self.send_header(k, v)
@@ -269,9 +293,12 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
 
     def _send_binary(self, code: int, data: bytes, content_type: str,
                      extra_headers: dict = None):
+        data, gzip_headers = self._maybe_gzip(data, content_type)
         headers = self._cors_headers()
         headers["Content-Type"] = content_type
         headers["Content-Length"] = str(len(data))
+        if gzip_headers:
+            headers.update(gzip_headers)
         if extra_headers:
             headers.update(extra_headers)
         self.send_response(code)
@@ -652,9 +679,29 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
             return self._send_error(404, "Not found")
         ext = os.path.splitext(file_path)[1].lower()
         content_type = MIME_MAP.get(ext, "application/octet-stream")
+
+        st = os.stat(file_path)
+        # Weak ETag so the gzip and identity variants share one validator.
+        etag = 'W/"%x-%x"' % (int(st.st_mtime), st.st_size)
+
+        # Revalidate everything so the service worker's background refresh
+        # always picks up new builds (cheap thanks to ETag/304).
+        cache_control = "no-cache" if ext == ".html" else "public, max-age=0, must-revalidate"
+
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", cache_control)
+            self.send_header("Vary", "Accept-Encoding")
+            self.end_headers()
+            return
+
         with open(file_path, "rb") as f:
             data = f.read()
-        self._send_binary(200, data, content_type)
+        self._send_binary(200, data, content_type, {
+            "Cache-Control": cache_control,
+            "ETag": etag,
+        })
 
 
 # ── Minimal multipart parser ────────────────────────────────────────

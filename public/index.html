@@ -199,9 +199,8 @@
   <!-- Toast -->
   <div class="toast hidden" id="toast"></div>
 
-  <!-- Third-party libraries (must load before modules) -->
-  <script src="lib/pdf.min.js"></script>
-  <script src="lib/mammoth.browser.min.js"></script>
+  <!-- Third-party libraries are lazy-loaded on demand (see js/lazyLoad.js):
+       pdf.js and mammoth only load when you actually open a PDF/DOCX. -->
 
   <!-- Scripts -->
   <script type="module" src="js/api.js"></script>

@@ -1,5 +1,6 @@
 import { downloadFile } from '../api.js';
 import { initFullscreenButton } from '../fullscreen.js';
+import { loadScript } from '../lazyLoad.js';
 
 export class DocxViewer {
   constructor(container, onSave) {
@@ -31,8 +32,10 @@ export class DocxViewer {
     );
 
     try {
-      const response = await downloadFile(filePath);
-      const arrayBuffer = await response.arrayBuffer();
+      const [arrayBuffer] = await Promise.all([
+        downloadFile(filePath).then(r => r.arrayBuffer()),
+        loadScript('/lib/mammoth.browser.min.js'),
+      ]);
 
       const result = await mammoth.convertToHtml({
         arrayBuffer: arrayBuffer,

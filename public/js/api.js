@@ -1,6 +1,17 @@
 const CHUNK_SIZE = 5 * 1024 * 1024
+const DEFAULT_TIMEOUT = 5000
 
-let _serverUrl = ''
+// Fail fast instead of hanging on a slow/unreachable server. The signal is
+// aborted if the response headers haven't arrived within timeoutMs; body
+// streaming continues unaffected once the fetch resolves.
+function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_TIMEOUT) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  return fetch(url, { ...options, signal: controller.signal })
+    .finally(() => clearTimeout(timer))
+}
+
+let _serverUrl = (localStorage.getItem('pdrive_server_url') || '').replace(/\/+$/, '')
 let _authToken = ''
 
 export function setServerUrl(url) {
@@ -26,7 +37,7 @@ export function getToken() {
 }
 
 export function loadServerUrl() {
-  _serverUrl = localStorage.getItem('pdrive_server_url') || ''
+  _serverUrl = (localStorage.getItem('pdrive_server_url') || '').replace(/\/+$/, '')
   return _serverUrl
 }
 
@@ -44,7 +55,7 @@ function headers(extra = {}) {
 }
 
 async function apiPost(endpoint, body) {
-  const res = await fetch(`${_serverUrl}${endpoint}`, {
+  const res = await fetchWithTimeout(`${_serverUrl}${endpoint}`, {
     method: 'POST',
     headers: headers({ 'Content-Type': 'application/json' }),
     body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -61,7 +72,7 @@ async function apiPost(endpoint, body) {
 }
 
 export async function login(password) {
-  const res = await fetch(`${_serverUrl}/api/auth/login`, {
+  const res = await fetchWithTimeout(`${_serverUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ password }),
@@ -110,7 +121,7 @@ export async function uploadFile(filePath, file, onProgress) {
     const end = Math.min(start + CHUNK_SIZE, file.size)
     const chunk = file.slice(start, end)
 
-    const res = await fetch(`${_serverUrl}/api/files/upload`, {
+    const res = await fetchWithTimeout(`${_serverUrl}/api/files/upload`, {
       method: 'POST',
       headers: headers({
         'Content-Type': 'application/octet-stream',
@@ -120,7 +131,7 @@ export async function uploadFile(filePath, file, onProgress) {
         'X-File-Name': nameB64,
       }),
       body: chunk,
-    })
+    }, 30000)
 
     const data = await res.json()
     if (!res.ok) {
@@ -138,7 +149,7 @@ export async function uploadFile(filePath, file, onProgress) {
 
 export async function downloadFile(path) {
   const url = `${_serverUrl}/api/files/download?path=${encodeURIComponent(path)}`
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     headers: headers(),
   })
   if (!res.ok) {
@@ -149,23 +160,19 @@ export async function downloadFile(path) {
 }
 
 export async function healthCheck() {
-  const res = await fetch(`${_serverUrl}/api/health`)
+  const res = await fetchWithTimeout(`${_serverUrl}/api/health`)
   if (!res.ok) throw new Error('Server unreachable')
   return res.json()
 }
 
 export async function checkConnectivity(timeoutMs = 2000) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const res = await fetch(`${_serverUrl}/api/health`, { signal: controller.signal })
+    const res = await fetchWithTimeout(`${_serverUrl}/api/health`, {}, timeoutMs)
     if (!res.ok) return false
     const data = await res.json()
     return data.server === 'pdrive'
   } catch {
     return false
-  } finally {
-    clearTimeout(timer)
   }
 }
 
@@ -173,19 +180,17 @@ export async function discoverServers(timeoutMs = 2000) {
   const ports = [8080, 8081, 9090, 3000, 5000, 8000, 80]
   const results = await Promise.allSettled(ports.map(async port => {
     const url = `http://pdrive.local:${port}`
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), timeoutMs)
     try {
-      const res = await fetch(`${url}/api/health`, { signal: controller.signal })
+      const res = await fetchWithTimeout(`${url}/api/health`, {}, timeoutMs)
       if (!res.ok) throw new Error('no')
       const data = await res.json()
       if (data.server !== 'pdrive') throw new Error('not pdrive')
       return url
-    } finally {
-      clearTimeout(timer)
+    } catch {
+      return null
     }
   }))
   return results
-    .filter(r => r.status === 'fulfilled')
+    .filter(r => r.status === 'fulfilled' && r.value)
     .map(r => r.value)
 }

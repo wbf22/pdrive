@@ -484,10 +484,14 @@ class PDriveApp {
   async syncAndReload() {
     this.isOnline = true
     this.updateStatusIndicator()
-    await this.syncOfflineChanges()
+    // Render the file tree first so the UI isn't blank while offline
+    // changes sync in the background.
     await this.loadTree()
     this.maybeOpenDeepLink()
     if (!this.activeFilePath) this.renderHomeView()
+    this.syncOfflineChanges()
+      .then(() => this.loadTree())
+      .catch(() => {})
   }
 
   // Keep retrying in the background when the server is unreachable so
@@ -525,68 +529,68 @@ class PDriveApp {
 
   // ----- Auth Flow --------------------------------------------------
   async initAuth() {
+    // Populate _serverUrl from storage first so the saved-password key
+    // ('pdrive_pass_' + serverUrl) resolves to the same location it was saved.
+    api.loadServerUrl()
+    const saved = this.getSavedPassword()
+    let triedSavedLogin = false
+
     // Auto-login with a saved (non-PIN) password so the unlock popup only
     // appears when nothing is remembered (or the password is PIN-protected).
-    if (!api.getToken()) {
-      const saved = this.getSavedPassword()
-      if (saved && !saved.pin) {
-        try {
-          await api.login(saved.data)
-        } catch { /* server unreachable or wrong password — normal flow below */ }
-      }
+    if (!api.getToken() && saved && !saved.pin) {
+      triedSavedLogin = true
+      try {
+        await api.login(saved.data)
+      } catch { /* handled below */ }
     }
 
-    const url = api.loadServerUrl()
-    if (!url) {
-      // No saved URL — try same-origin (served from the Python server)
+    // Verify the token actually works. Tokens live only in server memory, so a
+    // server restart invalidates every token. Without this check listFiles()
+    // would 401 and the tree would silently stay empty.
+    if (api.getToken()) {
       try {
-        await api.healthCheck()
+        await api.listFiles('/')
         this.isOnline = true
         this.updateStatusIndicator()
-        const token = api.loadToken()
-        if (token) {
-          await this.syncAndReload()
-        } else {
-          this.showLogin()
-        }
+        await this.syncAndReload()
+        return
       } catch {
-        this.isOnline = false
-        this.updateStatusIndicator()
-        const offlineFiles = await db.getAllOfflineFiles()
-        if (offlineFiles.length > 0) {
-          this.loadOfflineTree()
-          this.maybeOpenDeepLink()
-          if (!this.activeFilePath) this.renderHomeView()
-        } else {
-          this.openServerSettings()
+        // On 401 apiPost() clears the token. If it's still set, the server was
+        // just unreachable — go straight to the offline fallback.
+        if (api.getToken()) {
+          return this.showOfflineFallback()
         }
+        // Token was invalidated — fall through and re-login below.
       }
-      return
     }
 
-    const token = api.loadToken()
-    if (!token) {
-      this.showLogin()
-      return
+    // Token missing or invalidated (e.g. server restart). Re-authenticate with
+    // the saved password before resorting to the login screen.
+    if (saved && !saved.pin && !triedSavedLogin) {
+      try {
+        await api.login(saved.data)
+        this.isOnline = true
+        this.updateStatusIndicator()
+        await this.syncAndReload()
+        return
+      } catch { /* wrong password or unreachable — fall through */ }
     }
-    // Verify token is still valid
-    try {
-      await api.listFiles('/')
-      this.isOnline = true
-      this.updateStatusIndicator()
-      await this.syncAndReload()
-    } catch {
-      // Server unreachable — try offline mode
-      this.isOnline = false
-      this.updateStatusIndicator()
-      const offlineFiles = await db.getAllOfflineFiles()
-      if (offlineFiles.length > 0) {
-        this.loadOfflineTree()
-        this.maybeOpenDeepLink()
-        if (!this.activeFilePath) this.renderHomeView()
-      } else {
-        this.showLogin()
-      }
+
+    return this.showOfflineFallback()
+  }
+
+  async showOfflineFallback() {
+    this.isOnline = false
+    this.updateStatusIndicator()
+    const offlineFiles = await db.getAllOfflineFiles()
+    if (offlineFiles.length > 0) {
+      this.loadOfflineTree()
+      this.maybeOpenDeepLink()
+      if (!this.activeFilePath) this.renderHomeView()
+    } else if (api.loadServerUrl()) {
+      this.showLogin()
+    } else {
+      this.openServerSettings()
     }
   }
 
@@ -635,22 +639,31 @@ class PDriveApp {
 
   // ----- Password Save / Encrypt helpers ----------------------------
   getSavedPassword() {
-    const key = 'pdrive_pass_' + api.getServerUrl()
-    const raw = localStorage.getItem(key)
-    if (!raw) return null
-    try {
-      const data = JSON.parse(raw)
-      if (data.pin) return { pin: true, data: data }
-      return { pin: false, data: atob(data) }
-    } catch {
-      // Legacy: raw base64 without JSON wrapper
-      return { pin: false, data: atob(raw) }
+    const candidates = [
+      'pdrive_pass_' + api.getServerUrl(),
+      'pdrive_pass_' + api.getServerUrl().replace(/\/+$/, ''),
+      'pdrive_pass_',
+    ].filter((v, i, a) => v && a.indexOf(v) === i)
+    for (const key of candidates) {
+      const raw = localStorage.getItem(key)
+      if (!raw) continue
+      try {
+        const data = JSON.parse(raw)
+        if (data.pin) return { pin: true, data: data }
+        return { pin: false, data: atob(data) }
+      } catch {
+        // Legacy: raw base64 without JSON wrapper
+        return { pin: false, data: atob(raw) }
+      }
     }
+    return null
   }
 
   clearSavedPassword() {
-    const key = 'pdrive_pass_' + api.getServerUrl()
-    localStorage.removeItem(key)
+    const url = api.getServerUrl()
+    localStorage.removeItem('pdrive_pass_' + url)
+    localStorage.removeItem('pdrive_pass_' + url.replace(/\/+$/, ''))
+    localStorage.removeItem('pdrive_pass_')
   }
 
   async savePassword(password, pin = null) {

@@ -1,6 +1,7 @@
 import { downloadFile } from '../api.js';
 import { attachPinchZoom } from '../pinchZoom.js';
 import { initFullscreenButton } from '../fullscreen.js';
+import { loadScript } from '../lazyLoad.js';
 
 export class PDFViewer {
   constructor(container, onSave) {
@@ -52,8 +53,10 @@ export class PDFViewer {
     this.canvas = document.getElementById('pdfCanvas');
 
     try {
-      const response = await downloadFile(filePath);
-      const arrayBuffer = await response.arrayBuffer();
+      const [arrayBuffer] = await Promise.all([
+        downloadFile(filePath).then(r => r.arrayBuffer()),
+        loadScript('/lib/pdf.min.js'),
+      ]);
 
       pdfjsLib.GlobalWorkerOptions.workerSrc = '/lib/pdf.worker.min.js';
 

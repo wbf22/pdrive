@@ -1,4 +1,4 @@
-const VERSION = 'pdrive-v30'
+const VERSION = 'pdrive-v32'
 const CACHE_NAME = `pdrive-${VERSION}`
 
 // App shell precached on install so the first offline load works.
@@ -51,6 +51,24 @@ self.addEventListener('activate', (event) => {
 const isSameOrigin = (url) => url.startsWith(self.location.origin)
 const isApiRequest = (url) => url.includes('/api/')
 
+// fetch() transparently decompresses gzip responses but keeps the
+// Content-Encoding header. Storing that Response in the Cache API would make
+// the browser decompress the (already decompressed) body again when served,
+// corrupting cached assets. Strip the encoding headers so the cache holds
+// plain data. cache.add() in the install handler is unaffected — it stores
+// the raw wire bytes, which is correct.
+function toCacheable(response) {
+  if (!response.headers.has('Content-Encoding')) return response
+  const headers = new Headers(response.headers)
+  headers.delete('Content-Encoding')
+  headers.delete('Content-Length')
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  })
+}
+
 self.addEventListener('fetch', (event) => {
   const { request } = event
   if (request.method !== 'GET' || !isSameOrigin(request.url)) return
@@ -59,17 +77,25 @@ self.addEventListener('fetch', (event) => {
 
   // Page navigations: network-first, cached fallback.
   // Opens the app online → always gets the latest HTML.
+  // The network is raced against a short timeout so a slow/unreachable server
+  // never leaves the user staring at a blank page — the cached shell is shown.
   if (request.mode === 'navigate') {
+    const cached = caches.match(request).then(r => r || caches.match('/index.html'))
     event.respondWith(
-      fetch(request)
-        .then((response) => {
-          if (response && response.status === 200) {
-            const copy = response.clone()
-            caches.open(CACHE_NAME).then(cache => cache.put(request, copy))
-          }
-          return response
-        })
-        .catch(() => caches.match(request).then(r => r || caches.match('/index.html')))
+      Promise.race([
+        fetch(request)
+          .then((response) => {
+            if (response && response.status === 200) {
+              const copy = response.clone()
+              caches.open(CACHE_NAME).then(cache => cache.put(request, toCacheable(copy)))
+            }
+            return response
+          })
+          .catch(() => cached),
+        new Promise((resolve) => {
+          setTimeout(() => resolve(cached), 2500)
+        }),
+      ])
     )
     return
   }
@@ -82,7 +108,7 @@ self.addEventListener('fetch', (event) => {
         .then((response) => {
           if (response && response.status === 200 && response.type === 'basic') {
             const copy = response.clone()
-            caches.open(CACHE_NAME).then(cache => cache.put(request, copy))
+            caches.open(CACHE_NAME).then(cache => cache.put(request, toCacheable(copy)))
           }
           return response
         })
