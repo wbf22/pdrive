@@ -1,4 +1,4 @@
-import { downloadFile } from '../api.js';
+import { downloadFile, base64ToArrayBuffer } from '../fileStore.js';
 import { attachPinchZoom } from '../pinchZoom.js';
 import { initFullscreenButton } from '../fullscreen.js';
 import { loadScript } from '../lazyLoad.js';
@@ -16,7 +16,7 @@ export class PDFViewer {
     this.filePath = '';
   }
 
-  async render(filePath) {
+  async render(filePath, base64Content = null) {
     this.filePath = filePath;
     this.pageNum = 1;
     this.scale = 1.0;
@@ -54,7 +54,10 @@ export class PDFViewer {
 
     try {
       const [arrayBuffer] = await Promise.all([
-        downloadFile(filePath).then(r => r.arrayBuffer()),
+        (async () => {
+          if (base64Content) return base64ToArrayBuffer(base64Content)
+          return downloadFile(filePath).then(r => r.arrayBuffer())
+        })(),
         loadScript('/lib/pdf.min.js'),
       ]);
 

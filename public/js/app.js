@@ -8,6 +8,7 @@ import { DocxViewer } from './editors/docxViewer.js'
 
 import * as api from './api.js'
 import * as db from './db.js'
+import * as fileStore from './fileStore.js'
 
 class PDriveApp {
   constructor() {
@@ -17,6 +18,7 @@ class PDriveApp {
     this.isOnline = false
     this._syncing = false
     this._syncRetryTimer = null
+    fileStore.configure({ isOnline: () => this.isOnline })
     this.pendingOpenPath = null
     this._deepLinkOpened = false
     this.favorites = new Set()
@@ -144,7 +146,7 @@ class PDriveApp {
       onContextMenu: (node, x, y) => this.showContextMenu(node, x, y),
       onMove: (path, newPath, isDir) => this.handleTreeMove(path, newPath, isDir),
       fetchChildren: async dirPath => {
-        const data = await api.listFiles(dirPath)
+        const data = await fileStore.listFiles(dirPath)
         const node = this.treeView.getNodeByPath(this.treeView.treeData, dirPath)
         if (node) {
           node.children = data.files.map(f => ({
@@ -152,6 +154,8 @@ class PDriveApp {
             path: f.path,
             isDirectory: f.isDirectory,
             size: f.size,
+            offline: f.offline,
+            pendingAction: f.pendingAction,
             children: f.isDirectory ? [] : null,
           }))
         }
@@ -239,7 +243,7 @@ class PDriveApp {
     const path = this.pendingOpenPath
     this.pendingOpenPath = null
     if (!this.isOnline) {
-      const cached = await db.getCachedFile(path)
+      const cached = await fileStore.readCached(path)
       if (!cached) {
         this.showToast('This document is not available offline')
         return
@@ -833,86 +837,42 @@ class PDriveApp {
   // ----- File Tree --------------------------------------------------
   async loadTree() {
     try {
-      const data = await api.listFiles('/')
+      const data = await fileStore.listFiles('/')
       const rootNode = {
         path: '/',
         name: 'Root',
         isDirectory: true,
-        children: (data.files || []).map(f => {
-          const child = {
-            name: f.name,
-            path: f.path,
-            isDirectory: f.isDirectory,
-            size: f.size,
-            children: f.isDirectory ? [] : null,
-          }
-          return child
-        }),
+        children: (data.files || []).map(f => ({
+          name: f.name,
+          path: f.path,
+          isDirectory: f.isDirectory,
+          size: f.size,
+          offline: f.offline,
+          pendingAction: f.pendingAction,
+          children: f.isDirectory ? [] : null,
+        })),
       }
-      // Merge offline markers into the tree
-      const offlineFiles = await db.getAllOfflineFiles()
-      const offlinePaths = new Set(offlineFiles.map(f => f.path))
-      this._markOfflineInTree(rootNode, offlinePaths)
+      this.treeView.offline = false
       this.treeView.setTreeData(rootNode)
     } catch (err) {
       this.showToast('Error loading tree: ' + err.message)
     }
   }
 
-  _markOfflineInTree(node, offlinePaths) {
-    if (!node.children) return
-    for (const child of node.children) {
-      if (!child.isDirectory && offlinePaths.has(child.path)) {
-        child.offline = true
-        // Check for pending actions on this file
-        const cached = offlinePaths.has(child.path) ? { path: child.path } : null
-        if (cached) {
-          // We'll handle pending state in loadOfflineTree
-        }
-      }
-      if (child.isDirectory) {
-        this._markOfflineInTree(child, offlinePaths)
-      }
-    }
+  async loadOfflineTree() {
+    const rootNode = { path: '/', name: 'Root', isDirectory: true, children: await this._offlineChildren('/') }
+    this.treeView.offline = true
+    this.treeView.setTreeData(rootNode)
   }
 
-  async loadOfflineTree() {
-    const offlineFiles = await db.getAllOfflineFiles()
-    const rootNode = { path: '/', name: 'Root', isDirectory: true, children: [] }
-    const pendingActions = await db.getPendingActions()
-    const pendingMap = {}
-    for (const a of pendingActions) {
-      pendingMap[a.path] = a.type
-    }
-
-    // Build tree from flat paths
-    for (const f of offlineFiles) {
-      const parts = f.path.split('/').filter(Boolean)
-      let current = rootNode
-      for (let i = 0; i < parts.length; i++) {
-        const part = parts[i]
-        const isLast = i === parts.length - 1
-        const partialPath = '/' + parts.slice(0, i + 1).join('/')
-        if (isLast) {
-          current.children.push({
-            name: part,
-            path: partialPath,
-            isDirectory: false,
-            children: null,
-            offline: true,
-            pendingAction: pendingMap[f.path] || null,
-          })
-        } else {
-          let dir = current.children.find(c => c.isDirectory && c.name === part)
-          if (!dir) {
-            dir = { name: part, path: partialPath, isDirectory: true, children: [] }
-            current.children.push(dir)
-          }
-          current = dir
-        }
+  async _offlineChildren(path) {
+    const { files } = await fileStore.listFiles(path)
+    for (const entry of files) {
+      if (entry.isDirectory) {
+        entry.children = await this._offlineChildren(entry.path)
       }
     }
-    this.treeView.setTreeData(rootNode)
+    return files
   }
 
   // ----- Open / Edit Files ------------------------------------------
@@ -927,48 +887,21 @@ class PDriveApp {
     this.updateFavBtn()
     this.sidebar.classList.remove('open')
     // Set offline button label
-    db.isMarkedOffline(filePath).then(offline => {
+    fileStore.isMarkedOffline(filePath).then(offline => {
       this.fileOfflineBtn.textContent = offline ? 'Online Only' : 'Offline'
     })
-
     this.editorContainer.innerHTML = '<div class="welcome-screen"><h3>Loading file...</h3></div>'
 
     try {
       let fileData
-      if (this.isOnline) {
-        const cached = await db.getCachedFile(filePath)
-        if (cached && cached.offline && !cached.synced) {
-          // Unsynced local edits exist — show those until sync completes.
-          fileData = {
-            type: cached.contentType,
-            mime: cached.mime,
-            content: cached.content,
-          }
-        } else {
-          fileData = await api.readFile(filePath)
-          // Cache for offline if marked
-          if (cached && cached.offline) {
-            const size = fileData.content ? fileData.content.length : 0
-            if (size < db.MAX_OFFLINE_SIZE) {
-              await db.cacheFile(filePath, fileData.content, fileData.mtime, {
-                mime: fileData.mime || 'text/plain',
-                contentType: fileData.type || 'text',
-                size,
-              })
-            }
-          }
-        }
-      } else {
-        const cached = await db.getCachedFile(filePath)
-        if (!cached) {
-          alert('This file is not available offline')
+      try {
+        fileData = await fileStore.readFile(filePath)
+      } catch (err) {
+        if (!this.isOnline) {
+          alert(err.message)
           return
         }
-        fileData = {
-          type: cached.contentType,
-          mime: cached.mime,
-          content: cached.content,
-        }
+        throw err
       }
 
       const ext = filePath.split('.').pop().toLowerCase()
@@ -1004,11 +937,11 @@ class PDriveApp {
         this.activeEditor = mdEd
       } else if (ext === 'pdf') {
         const viewer = new PDFViewer(this.editorContainer, null)
-        viewer.render(filePath)
+        viewer.render(filePath, fileData.content)
         this.activeEditor = viewer
       } else if (ext === 'docx') {
         const viewer = new DocxViewer(this.editorContainer, null)
-        viewer.render(filePath)
+        viewer.render(filePath, fileData.content)
         this.activeEditor = viewer
       } else {
         const textEd = new TextEditor(this.editorContainer, text => this.saveFile(text))
@@ -1022,34 +955,16 @@ class PDriveApp {
 
   async saveFile(content, encoding) {
     if (!this.activeFilePath) return
-    if (this.isOnline) {
-      try {
-        await api.writeFile(this.activeFilePath, content, encoding)
-        // Update offline cache if this file is marked
-        if (await db.isMarkedOffline(this.activeFilePath)) {
-          const cached = await db.getCachedFile(this.activeFilePath)
-          if (cached) {
-            await db.cacheFile(this.activeFilePath, content, cached.serverMtime, {
-              mime: cached.mime,
-              contentType: cached.contentType,
-              size: content.length,
-            })
-          }
-        }
-        this.showToast('File saved!')
-      } catch (err) {
-        alert('Save failed: ' + err.message)
-      }
-    } else {
-      // Offline save — queue pending update
-      try {
-        await db.updateCachedContent(this.activeFilePath, content)
-        await db.addPendingAction({ type: 'update', path: this.activeFilePath, content, encoding })
+    try {
+      const { queued } = await fileStore.writeFile(this.activeFilePath, content, encoding)
+      if (queued) {
         this.showToast('Saved offline (will sync when connected)')
         this.loadOfflineTree()
-      } catch (err) {
-        alert('Offline save failed: ' + err.message)
+      } else {
+        this.showToast('File saved!')
       }
+    } catch (err) {
+      alert('Save failed: ' + err.message)
     }
   }
 
@@ -1075,7 +990,7 @@ class PDriveApp {
     // Update offline toggle label
     const ctxOffline = document.getElementById('ctxOffline')
     if (ctxOffline && !node.isDirectory) {
-      const isOffline = await db.isMarkedOffline(node.path)
+      const isOffline = await fileStore.isMarkedOffline(node.path)
       ctxOffline.textContent = isOffline ? '📥 Online Only' : '📥 Available Offline'
     }
     const ctxCopy = document.getElementById('ctxCopyLink')
@@ -1135,12 +1050,8 @@ class PDriveApp {
     } else if (action === 'delete') {
       this.showConfirm('Delete', `Delete "${node.name}"?`, async () => {
         try {
-          if (this.isOnline) {
-            await api.deleteItem(node.path, isDir)
-          } else {
-            // Offline delete — queue pending action
-            await db.addPendingAction({ type: 'delete', path: node.path })
-            await db.unmarkOffline(node.path)
+          const { queued } = await fileStore.deleteFile(node.path, isDir)
+          if (queued) {
             this.showToast('Delete queued (will sync when connected)')
           }
           this.removeFavoriteForPath(node.path, isDir)
@@ -1163,27 +1074,21 @@ class PDriveApp {
       if (!isDir) this.copyFileLink(node.path)
     } else if (action === 'offline') {
       try {
-        const alreadyOffline = await db.isMarkedOffline(node.path)
+        const alreadyOffline = await fileStore.isMarkedOffline(node.path)
         if (alreadyOffline) {
-          await db.unmarkOffline(node.path)
+          await fileStore.unmarkOffline(node.path)
           this.showToast('Removed from offline')
         } else {
           if (!this.isOnline) {
             alert('Cannot mark files for offline while offline — connect to the server first')
             return
           }
-          const fileData = await api.readFile(node.path)
-          const size = fileData.content ? fileData.content.length : 0
-          if (size > db.MAX_OFFLINE_SIZE) {
-            this.showToast('File too large for offline caching')
-            return
+          try {
+            await fileStore.markOffline(node.path)
+            this.showToast('Marked for offline')
+          } catch (err) {
+            this.showToast(err.message)
           }
-          await db.cacheFile(node.path, fileData.content, fileData.mtime, {
-            mime: fileData.mime || 'text/plain',
-            contentType: fileData.type || 'text',
-            size,
-          })
-          this.showToast('Marked for offline')
         }
         if (this.isOnline) {
           await this.loadTree()
@@ -1295,7 +1200,7 @@ class PDriveApp {
     if (!this.activeFilePath) return
     this.showConfirm('Delete File', `Delete "${this.activeFilePath}"?`, async () => {
       try {
-        await api.deleteItem(this.activeFilePath, false)
+        await fileStore.deleteFile(this.activeFilePath, false)
         this.showToast('File deleted')
         this.removeFavoriteForPath(this.activeFilePath, false)
         this.clearRoute()
@@ -1307,39 +1212,33 @@ class PDriveApp {
 
   async toggleActiveFileOffline() {
     if (!this.activeFilePath) return
-    const node = { path: this.activeFilePath }
-    const alreadyOffline = await db.isMarkedOffline(node.path)
-    if (alreadyOffline) {
-      await db.unmarkOffline(node.path)
-      this.showToast('Removed from offline')
-      this.fileOfflineBtn.textContent = 'Offline'
-    } else {
-      if (!this.isOnline) {
-        alert('Cannot mark files for offline while offline — connect to the server first')
-        return
-      }
-      try {
-        const fileData = await api.readFile(node.path)
-        const size = fileData.content ? fileData.content.length : 0
-        if (size > db.MAX_OFFLINE_SIZE) {
-          this.showToast('File too large for offline caching')
+    const path = this.activeFilePath
+    try {
+      const alreadyOffline = await fileStore.isMarkedOffline(path)
+      if (alreadyOffline) {
+        await fileStore.unmarkOffline(path)
+        this.showToast('Removed from offline')
+        this.fileOfflineBtn.textContent = 'Offline'
+      } else {
+        if (!this.isOnline) {
+          alert('Cannot mark files for offline while offline — connect to the server first')
           return
         }
-        await db.cacheFile(node.path, fileData.content, fileData.mtime, {
-          mime: fileData.mime || 'text/plain',
-          contentType: fileData.type || 'text',
-          size,
-        })
-        this.showToast('Marked for offline')
-        this.fileOfflineBtn.textContent = 'Online Only'
-      } catch (err) {
-        alert('Failed to mark for offline: ' + err.message)
+        try {
+          await fileStore.markOffline(path)
+          this.showToast('Marked for offline')
+          this.fileOfflineBtn.textContent = 'Online Only'
+        } catch (err) {
+          this.showToast(err.message)
+        }
       }
-    }
-    if (this.isOnline) {
-      await this.loadTree()
-    } else {
-      await this.loadOfflineTree()
+      if (this.isOnline) {
+        await this.loadTree()
+      } else {
+        await this.loadOfflineTree()
+      }
+    } catch (err) {
+      alert('Failed to toggle offline: ' + err.message)
     }
   }
 
@@ -1389,7 +1288,7 @@ class PDriveApp {
               // Check for conflicts on update
               if (action.type === 'update') {
                 try {
-                  const serverData = await api.readFile(action.path)
+                  const serverData = await fileStore.readFile(action.path, { fromServer: true })
                   const cached = await db.getCachedFile(action.path)
                   if (cached && serverData.mtime > cached.serverMtime) {
                     // Server has changes — conflict
@@ -1397,7 +1296,7 @@ class PDriveApp {
                     if (resolution === 'keep') {
                       // Save as copy
                       const conflictedPath = action.path.replace(/(\.\w+)?$/, '.conflicted$1')
-                      await api.writeFile(conflictedPath, action.content, action.encoding)
+                      await fileStore.writeFile(conflictedPath, action.content, action.encoding)
                       this.showToast(`Saved as ${conflictedPath}`)
                     }
                     // If 'accept', just update local cache with server version
@@ -1414,7 +1313,7 @@ class PDriveApp {
                   // Server file doesn't exist or error — still try to write
                 }
               }
-              await api.writeFile(action.path, action.content || '', action.encoding)
+              await fileStore.writeFile(action.path, action.content || '', action.encoding)
               // The push succeeded — mark the cache synced so it's not overwritten.
               const cached = await db.getCachedFile(action.path)
               if (cached && cached.offline) {
@@ -1423,7 +1322,7 @@ class PDriveApp {
             } else if (action.type === 'delete') {
               try {
                 // Check if server has modifications
-                const serverData = await api.readFile(action.path)
+                const serverData = await fileStore.readFile(action.path, { fromServer: true })
                 const cached = await db.getCachedFile(action.path)
                 if (cached && serverData.mtime > cached.serverMtime) {
                   const resolution = await this.showConflictModal(action.path, true)
@@ -1509,7 +1408,7 @@ class PDriveApp {
       if (cached.synced) {
         // No local edits — silently update the cache to the server version.
         try {
-          const data = await api.readFile(m.path)
+          const data = await fileStore.readFile(m.path, { fromServer: true })
           if (data.type === 'too_large') continue
           await db.cacheFile(m.path, data.content, data.mtime, {
             mime: data.mime || 'text/plain',
@@ -1523,12 +1422,12 @@ class PDriveApp {
         if (resolution === 'keep') {
           const conflictedPath = m.path.replace(/(\.\w+)?$/, '.conflicted$1')
           try {
-            await api.writeFile(conflictedPath, cached.content)
+            await fileStore.writeFile(conflictedPath, cached.content)
             this.showToast(`Saved as ${conflictedPath}`)
           } catch { /* ignore */ }
         }
         try {
-          const data = await api.readFile(m.path)
+          const data = await fileStore.readFile(m.path, { fromServer: true })
           if (data.type !== 'too_large') {
             await db.cacheFile(m.path, data.content, data.mtime, {
               mime: data.mime || 'text/plain',

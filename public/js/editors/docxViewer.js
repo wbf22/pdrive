@@ -1,4 +1,4 @@
-import { downloadFile } from '../api.js';
+import { downloadFile, base64ToArrayBuffer } from '../fileStore.js';
 import { initFullscreenButton } from '../fullscreen.js';
 import { loadScript } from '../lazyLoad.js';
 
@@ -9,7 +9,7 @@ export class DocxViewer {
     this.filePath = '';
   }
 
-  async render(filePath) {
+  async render(filePath, base64Content = null) {
     this.filePath = filePath;
 
     this.container.innerHTML = `
@@ -33,7 +33,10 @@ export class DocxViewer {
 
     try {
       const [arrayBuffer] = await Promise.all([
-        downloadFile(filePath).then(r => r.arrayBuffer()),
+        (async () => {
+          if (base64Content) return base64ToArrayBuffer(base64Content)
+          return downloadFile(filePath).then(r => r.arrayBuffer())
+        })(),
         loadScript('/lib/mammoth.browser.min.js'),
       ]);
 

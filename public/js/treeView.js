@@ -4,6 +4,7 @@ export class TreeView {
     this.onSelectFile = options.onSelectFile
     this.onContextMenu = options.onContextMenu
     this.fetchChildren = options.fetchChildren
+    this.offline = false
     this.onMove = options.onMove
     this.expandedPaths = new Set(['/'])
     this.activePath = null
@@ -283,8 +284,10 @@ export class TreeView {
       this.expandedPaths.delete(nodePath)
     } else {
       this.expandedPaths.add(nodePath)
-      if (this.fetchChildren) {
-        await this.fetchChildren(nodePath)
+      if (this.fetchChildren && !this.offline) {
+        try {
+          await this.fetchChildren(nodePath)
+        } catch { /* tree already has children (e.g. offline) — keep going */ }
       }
     }
     this.render()

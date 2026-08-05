@@ -1,4 +1,4 @@
-const VERSION = 'pdrive-v32'
+const VERSION = 'pdrive-v35'
 const CACHE_NAME = `pdrive-${VERSION}`
 
 // App shell precached on install so the first offline load works.
@@ -14,6 +14,7 @@ const APP_SHELL = [
   '/js/api.js',
   '/js/app.js',
   '/js/db.js',
+  '/js/fileStore.js',
   '/js/treeView.js',
   '/js/pinchZoom.js',
   '/js/fullscreen.js',
