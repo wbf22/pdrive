@@ -468,13 +468,17 @@ body {
 }
 
 .csv-table {
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   width: 100%;
   table-layout: fixed;
 }
 
 .csv-table th, .csv-table td {
-  border: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-color);
+  border-right: 1px solid var(--border-color);
+  border-top: none;
+  border-left: none;
   padding: 6px 10px;
   min-width: 90px;
   height: 32px;
@@ -488,6 +492,7 @@ body {
   color: var(--text-muted);
   font-weight: 600;
   text-align: center;
+  border-top: 1px solid var(--border-color);
 }
 
 .csv-table .row-header {
@@ -496,6 +501,7 @@ body {
   background-color: var(--bg-panel);
   text-align: center;
   color: var(--text-muted);
+  border-left: 1px solid var(--border-color);
 }
 
 .csv-cell {
@@ -527,7 +533,7 @@ body {
   background: var(--primary);
   border: 2px solid #fff;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
-  z-index: 30;
+  z-index: 0;
   touch-action: none;
   cursor: grab;
   display: none;
@@ -559,6 +565,35 @@ body {
   outline: none;
   user-select: text;
   -webkit-user-select: text;
+}
+
+/* Floated (sticky) rows/columns and frozen header */
+.csv-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+}
+
+.csv-table tr.floated-row > td,
+.csv-table tr.floated-row > th {
+  position: sticky;
+  z-index: 2;
+  background-color: var(--bg-panel);
+}
+
+.csv-table td.floated-col,
+.csv-table th.floated-col {
+  position: sticky;
+  z-index: 1;
+  background-color: var(--bg-panel);
+}
+
+.csv-table tr.floated-row > td.floated-col {
+  z-index: 3;
+}
+
+.csv-table thead th.floated-col {
+  z-index: 5;
 }
 
 /* Markdown Editor */

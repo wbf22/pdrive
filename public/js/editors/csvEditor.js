@@ -12,6 +12,8 @@ export class CSVEditor {
     this.formulas = {}; // { 'c4': 'b4*1' }
     this.styles = {}; // { 'b6': { color: '13,115,30' } }
     this.metaLines = []; // preserves any unknown <meta> tags
+    this.floatedRows = new Set(); // 0-based row indices pinned while scrolling
+    this.floatedCols = new Set(); // 0-based col indices pinned while scrolling
     this.selectedCell = null; // { r, c } — active/cursor cell
     this.anchor = null; // { r, c } — selection start point
     this.selection = null; // { r1, c1, r2, c2 } normalized; null = single cell
@@ -28,6 +30,8 @@ export class CSVEditor {
     this.formulas = {};
     this.styles = {};
     this.metaLines = [];
+    this.floatedRows = new Set();
+    this.floatedCols = new Set();
 
     const lines = csvText.split(/\r?\n/);
     const dataLines = [];
@@ -89,8 +93,22 @@ export class CSVEditor {
 
   parseMetaLine(line) {
     // e.g., <meta> c4=b4*1  OR  <meta> color b6=13,115,30  OR  <meta> wrap a2
+    //  OR  <meta> float row 2  OR  <meta> float col C
     const content = line.substring(6).trim();
-    if (content.toLowerCase().startsWith('color ')) {
+    if (content.toLowerCase().startsWith('float')) {
+      const parts = content.substring(5).trim().split(/\s+/);
+      const which = (parts[0] || '').toLowerCase();
+      const name = parts[1];
+      if (which === 'row' && name !== undefined) {
+        const rowNum = parseInt(name);
+        if (!isNaN(rowNum)) this.floatedRows.add(rowNum - 1);
+      } else if (which === 'col' && name !== undefined) {
+        const coord = this.cellNameToCoord(name + '1');
+        if (coord) this.floatedCols.add(coord.c);
+      } else {
+        this.metaLines.push(line);
+      }
+    } else if (content.toLowerCase().startsWith('color ')) {
       const parts = content.substring(6).split('=');
       if (parts.length === 2) {
         const cell = parts[0].trim().toLowerCase();
@@ -285,15 +303,31 @@ export class CSVEditor {
     this._onCellMenuScroll = () => this._closeCellMenu();
     this._onGridContextMenu = (e) => {
       const cell = e.target.closest && e.target.closest('.csv-cell');
-      if (!cell) return;
-      e.preventDefault();
-      const r = parseInt(cell.getAttribute('data-r'));
-      const c = parseInt(cell.getAttribute('data-c'));
-      if (this._activeInlineInput) this._commitInlineEdit();
-      if (!this._isInSelection(r, c)) {
-        this.selectCell(r, c);
+      if (cell) {
+        e.preventDefault();
+        const r = parseInt(cell.getAttribute('data-r'));
+        const c = parseInt(cell.getAttribute('data-c'));
+        if (this._activeInlineInput) this._commitInlineEdit();
+        if (!this._isInSelection(r, c)) {
+          this.selectCell(r, c);
+        }
+        this._showCellMenu(e.clientX, e.clientY, { r, c });
+        return;
       }
-      this._showCellMenu(e.clientX, e.clientY, { r, c });
+      const colHeader = e.target.closest && e.target.closest('.col-header');
+      if (colHeader) {
+        e.preventDefault();
+        const c = parseInt(colHeader.getAttribute('data-c'));
+        if (!isNaN(c)) this._showHeaderMenu(e.clientX, e.clientY, { type: 'col', c });
+        return;
+      }
+      const rowHeader = e.target.closest && e.target.closest('.row-header');
+      if (rowHeader) {
+        const r = parseInt(rowHeader.getAttribute('data-r'));
+        if (isNaN(r)) return; // corner cell
+        e.preventDefault();
+        this._showHeaderMenu(e.clientX, e.clientY, { type: 'row', r });
+      }
     };
     this._onSecondPointerDown = (e) => {
       if (this._cellGesture && e.pointerId !== this._cellGesture.pointerId) {
@@ -406,28 +440,34 @@ export class CSVEditor {
     this.tableContainer.scrollLeft = (sx + vx) * k - vx;
     this.tableContainer.scrollTop = (sy + vy) * k - vy;
     this._positionHandles();
+    this._positionFloats();
   }
 
   buildGridUI() {
     const numCols = this.grid[0] ? this.grid[0].length : 10;
-    
+
     // Header Row (Corner + A, B, C...)
     let headerHTML = '<th class="row-header"></th>';
     for (let c = 0; c < numCols; c++) {
-      headerHTML += `<th>${this.colToName(c)}</th>`;
+      const floated = this.floatedCols.has(c) ? ' floated-col' : '';
+      headerHTML += `<th class="col-header${floated}" data-c="${c}">${this.colToName(c)}</th>`;
     }
     this.tableHeader.innerHTML = headerHTML;
 
     // Body Rows
     let bodyHTML = '';
     for (let r = 0; r < this.grid.length; r++) {
-      bodyHTML += `<tr><td class="row-header">${r + 1}</td>`;
+      const rowFloated = this.floatedRows.has(r);
+      bodyHTML += `<tr data-r="${r}" class="${rowFloated ? 'floated-row' : ''}"><td class="row-header${rowFloated ? ' floated-row' : ''}" data-r="${r}">${r + 1}</td>`;
       for (let c = 0; c < numCols; c++) {
         const cellRef = `${this.colToName(c).toLowerCase()}${r + 1}`;
         const displayVal = this.getDisplayValue(r, c);
         const styleObj = this.styles[cellRef];
         let styleAttr = '';
         let cellClass = 'csv-cell';
+        if (this.floatedCols.has(c)) {
+          cellClass += ' floated-col';
+        }
         if (styleObj && styleObj.color) {
           styleAttr = `style="color: rgb(${styleObj.color})"`;
         }
@@ -461,6 +501,8 @@ export class CSVEditor {
     const cellMin = 90;
     const tableMin = Math.max(container.clientWidth, numCols * cellMin);
     table.style.width = tableMin + 'px';
+
+    this._positionFloats();
   }
 
   selectCell(r, c, extend = false) {
@@ -784,6 +826,74 @@ export class CSVEditor {
     this._applySelectionUI();
   }
 
+  selectRow(r) {
+    const numCols = this.grid[0] ? this.grid[0].length : 0;
+    this.anchor = { r, c: 0 };
+    this.selection = { r1: r, c1: 0, r2: r, c2: numCols - 1 };
+    this.selectedCell = { r, c: 0 };
+    this._applySelectionUI();
+  }
+
+  selectCol(c) {
+    const numRows = this.grid.length;
+    this.anchor = { r: 0, c };
+    this.selection = { r1: 0, c1: c, r2: numRows - 1, c2: c };
+    this.selectedCell = { r: 0, c };
+    this._applySelectionUI();
+  }
+
+  toggleFloatRow(r) {
+    if (this.floatedRows.has(r)) {
+      this.floatedRows.delete(r);
+      this.onNotify?.(`Un-floated row ${r + 1}`);
+    } else {
+      this.floatedRows.add(r);
+      this.onNotify?.(`Floated row ${r + 1}`);
+    }
+    this.refreshGrid();
+  }
+
+  toggleFloatCol(c) {
+    if (this.floatedCols.has(c)) {
+      this.floatedCols.delete(c);
+      this.onNotify?.(`Un-floated column ${this.colToName(c)}`);
+    } else {
+      this.floatedCols.add(c);
+      this.onNotify?.(`Floated column ${this.colToName(c)}`);
+    }
+    this.refreshGrid();
+  }
+
+  _positionFloats() {
+    if (!this.tableBody || !this.tableHeader || !this.tableEl) return;
+    const z = this.zoom || 1;
+
+    const headerH = this.tableHeader.getBoundingClientRect().height;
+    const floatedRows = this.tableBody.querySelectorAll('tr.floated-row');
+    const rowH = floatedRows.length ? floatedRows[0].getBoundingClientRect().height : 0;
+    floatedRows.forEach((tr, i) => {
+      const top = (headerH + i * rowH) / z;
+      tr.querySelectorAll('td, th').forEach(cell => { cell.style.top = top + 'px'; });
+    });
+
+    const rowHeader = this.tableBody.querySelector('.row-header');
+    const rowHeaderW = rowHeader ? rowHeader.getBoundingClientRect().width : 0;
+    const colWs = new Map();
+    const sortedCols = [...this.floatedCols].sort((a, b) => a - b);
+    sortedCols.forEach((c, i) => {
+      let colW = colWs.get(c);
+      if (colW === undefined) {
+        const sample = this.tableBody.querySelector(`.csv-cell[data-c="${c}"]`);
+        colW = sample ? sample.getBoundingClientRect().width : 0;
+        colWs.set(c, colW);
+      }
+      const left = (rowHeaderW + i * colW) / z;
+      this.tableBody.querySelectorAll(`td[data-c="${c}"]`).forEach(cell => { cell.style.left = left + 'px'; });
+      const headerTh = this.tableEl.querySelector(`th[data-c="${c}"]`);
+      if (headerTh) headerTh.style.left = left + 'px';
+    });
+  }
+
   _commitInlineEdit() {
     if (this._activeInlineInput) {
       const input = this._activeInlineInput;
@@ -1000,6 +1110,10 @@ export class CSVEditor {
         handle.style.left = (cr.left - contRect.left + this.tableContainer.scrollLeft) + 'px';
         handle.style.top = (cr.top - contRect.top + this.tableContainer.scrollTop) + 'px';
       }
+      const tr = cell.closest('tr');
+      const onFloated = cell.classList.contains('floated-col') ||
+                        (tr && tr.classList.contains('floated-row'));
+      handle.style.zIndex = onFloated ? '10' : '0';
       handle.style.display = 'block';
     };
     place(this._handles.tl, this._cellElFor(rect.r1, rect.c1), 'tl');
@@ -1013,9 +1127,6 @@ export class CSVEditor {
   // ----- Cell action menu (long-press / right-click) ------------------
 
   _showCellMenu(x, y, cell) {
-    this._closeCellMenu();
-    const menu = document.createElement('div');
-    menu.className = 'context-menu csv-cell-menu';
     const items = [
       {
         label: 'Edit',
@@ -1029,6 +1140,38 @@ export class CSVEditor {
       { label: 'Paste', action: () => { this._closeCellMenu(); this.pasteSelection(); } },
       { label: 'Clear', action: () => { this._closeCellMenu(); this.clearSelection(); } },
     ];
+    this._renderMenu(x, y, items, true);
+  }
+
+  _showHeaderMenu(x, y, target) {
+    const isCol = target.type === 'col';
+    const name = isCol ? this.colToName(target.c) : String(target.r + 1);
+    const floated = isCol ? this.floatedCols.has(target.c) : this.floatedRows.has(target.r);
+    const items = [
+      {
+        label: `${floated ? 'Un-float' : 'Float'} ${isCol ? 'Column' : 'Row'} ${name}`,
+        action: () => {
+          this._closeCellMenu();
+          if (isCol) this.toggleFloatCol(target.c);
+          else this.toggleFloatRow(target.r);
+        },
+      },
+      {
+        label: `Select ${isCol ? 'Column' : 'Row'} ${name}`,
+        action: () => {
+          this._closeCellMenu();
+          if (isCol) this.selectCol(target.c);
+          else this.selectRow(target.r);
+        },
+      },
+    ];
+    this._renderMenu(x, y, items, false);
+  }
+
+  _renderMenu(x, y, items, deselect) {
+    this._closeCellMenu();
+    const menu = document.createElement('div');
+    menu.className = 'context-menu csv-cell-menu';
     for (const item of items) {
       const btn = document.createElement('button');
       btn.type = 'button';
@@ -1036,7 +1179,7 @@ export class CSVEditor {
       btn.textContent = item.label;
       btn.addEventListener('click', () => {
         item.action();
-        this._deselect();
+        if (deselect) this._deselect();
       });
       menu.appendChild(btn);
     }
@@ -1109,6 +1252,14 @@ export class CSVEditor {
       if (style.wrap) {
         lines.push(`<meta> wrap ${cellRef}`);
       }
+    }
+
+    // Append meta float markers: <meta> float row 2 / <meta> float col C
+    for (const r of [...this.floatedRows].sort((a, b) => a - b)) {
+      lines.push(`<meta> float row ${r + 1}`);
+    }
+    for (const c of [...this.floatedCols].sort((a, b) => a - b)) {
+      lines.push(`<meta> float col ${this.colToName(c)}`);
     }
 
     // Append preserved unknown meta lines
