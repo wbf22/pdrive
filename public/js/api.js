@@ -111,6 +111,10 @@ export async function moveItem(oldPath, newPath) {
   return apiPost('/api/files/move', { oldPath, newPath })
 }
 
+export async function copyItem(sourcePath, destPath) {
+  return apiPost('/api/files/copy', { sourcePath, destPath })
+}
+
 export async function uploadFile(filePath, file, onProgress) {
   const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
   const uploadId = crypto.randomUUID()

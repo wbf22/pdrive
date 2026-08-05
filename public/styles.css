@@ -596,6 +596,135 @@ body {
   z-index: 5;
 }
 
+/* CSV chart dialogs — floating (non-modal) so the sheet stays usable while
+   picking cell ranges. */
+.csv-chart-dialog {
+  position: fixed;
+  top: calc(var(--navbar-height) + 60px);
+  right: 24px;
+  width: 380px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - var(--navbar-height) - 90px);
+  display: flex;
+  flex-direction: column;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  z-index: 900;
+}
+
+.csv-chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.csv-chart-header h3 {
+  font-size: 15px;
+}
+
+.csv-chart-body {
+  padding: 16px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.csv-chart-body .input-group {
+  margin-bottom: 12px;
+}
+
+.csv-chart-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  background-color: var(--bg-panel);
+  border-top: 1px solid var(--border-color);
+  border-radius: 0 0 12px 12px;
+}
+
+.csv-range-row {
+  display: flex;
+  gap: 6px;
+}
+
+.csv-range-row input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+}
+
+.csv-pick-btn {
+  white-space: nowrap;
+}
+
+.csv-field-row {
+  display: flex;
+  gap: 10px;
+}
+
+.csv-field-row .input-group {
+  flex: 1;
+  min-width: 0;
+}
+
+.csv-chart-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 4px 0 12px;
+}
+
+.csv-chart-error {
+  background-color: rgba(243, 139, 168, 0.12);
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  margin-top: 4px;
+}
+
+.csv-chart-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.csv-chart-row:last-of-type {
+  border-bottom: none;
+}
+
+.csv-chart-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.csv-chart-row-info span {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.csv-chart-row-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 /* Markdown Editor */
 .md-editor-wrapper {
   display: flex;
@@ -1456,6 +1585,16 @@ body {
 
   .csv-actions {
     flex-wrap: wrap;
+  }
+
+  /* Chart dialogs become a bottom sheet on phones. */
+  .csv-chart-dialog {
+    top: auto;
+    right: 8px;
+    left: 8px;
+    bottom: 8px;
+    width: auto;
+    max-height: 70vh;
   }
 }
 

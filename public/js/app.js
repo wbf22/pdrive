@@ -887,6 +887,11 @@ class PDriveApp {
 
   // ----- Open / Edit Files ------------------------------------------
   async openFile(filePath) {
+    // Let the outgoing editor drop its document-level listeners/timers.
+    if (this.activeEditor && typeof this.activeEditor.destroy === 'function') {
+      try { this.activeEditor.destroy() } catch { /* ignore */ }
+    }
+    this.activeEditor = null
     this.activeFilePath = filePath
     this.updateBreadcrumb(filePath)
     this.setRoute(filePath)
@@ -938,7 +943,16 @@ class PDriveApp {
         viewer.render(content, fileData.mime, filePath.split('/').pop())
         this.activeEditor = viewer
       } else if (ext === 'csv') {
-        const csvEd = new CSVEditor(this.editorContainer, csv => this.saveFile(csv), msg => this.showToast(msg))
+        const csvEd = new CSVEditor(
+          this.editorContainer,
+          csv => this.saveFile(csv),
+          msg => this.showToast(msg),
+          {
+            filePath,
+            // Chart images are written beside the CSV, not to the open file.
+            writeFile: (path, data, encoding) => this.saveFileAs(path, data, encoding),
+          },
+        )
         csvEd.render(content)
         this.activeEditor = csvEd
       } else if (ext === 'md') {
@@ -976,6 +990,19 @@ class PDriveApp {
     } catch (err) {
       alert('Save failed: ' + err.message)
     }
+  }
+
+  // Write a file other than the one being edited (used by the CSV editor for
+  // generated chart images). The tree is only refreshed the first time a given
+  // path is written so repeated chart updates don't churn the explorer.
+  async saveFileAs(path, content, encoding) {
+    const result = await fileStore.writeFile(path, content, encoding)
+    this._writtenSidecars = this._writtenSidecars || new Set()
+    if (!this._writtenSidecars.has(path)) {
+      this._writtenSidecars.add(path)
+      if (this.isOnline) this.loadTree().catch(() => {})
+    }
+    return result
   }
 
   saveActiveFile() {
@@ -1057,6 +1084,8 @@ class PDriveApp {
           alert('Rename failed: ' + err.message)
         }
       })
+    } else if (action === 'duplicate') {
+      await this.duplicateItem(node)
     } else if (action === 'delete') {
       this.showConfirm('Delete', `Delete "${node.name}"?`, async () => {
         try {
@@ -1108,6 +1137,49 @@ class PDriveApp {
       } catch (err) {
         alert('Failed to toggle offline: ' + err.message)
       }
+    }
+  }
+
+  // ----- Duplicate --------------------------------------------------
+  // "notes.md" → "notes copy.md" → "notes copy 2.md" (folders keep their whole
+  // name since they have no extension to preserve).
+  uniqueCopyName(name, taken, isDir) {
+    const dot = isDir ? -1 : name.lastIndexOf('.')
+    const base = dot > 0 ? name.slice(0, dot) : name
+    const ext = dot > 0 ? name.slice(dot) : ''
+    let candidate = `${base} copy${ext}`
+    let n = 2
+    while (taken.has(candidate)) {
+      candidate = `${base} copy ${n}${ext}`
+      n++
+    }
+    return candidate
+  }
+
+  async duplicateItem(node) {
+    if (!this.isOnline) {
+      alert('Cannot duplicate while offline — connect to the server first')
+      return
+    }
+    const parentDir = node.path.substring(0, node.path.lastIndexOf('/')) || '/'
+    try {
+      const { files } = await api.listFiles(parentDir)
+      const taken = new Set((files || []).map(f => f.name))
+      const newName = this.uniqueCopyName(node.name, taken, node.isDirectory)
+      const newPath = parentDir === '/' ? `/${newName}` : `${parentDir}/${newName}`
+      await api.copyItem(node.path, newPath)
+      this.showToast(`Duplicated as "${newName}"`)
+      await this.loadTree()
+      // Keep the containing folder open so the copy is visible right away.
+      if (parentDir !== '/') {
+        this.treeView.expandedPaths.add(parentDir)
+        if (this.treeView.fetchChildren) {
+          try { await this.treeView.fetchChildren(parentDir) } catch { /* ignore */ }
+        }
+        this.treeView.render()
+      }
+    } catch (err) {
+      alert('Duplicate failed: ' + err.message)
     }
   }
 

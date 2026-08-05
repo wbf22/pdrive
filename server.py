@@ -383,6 +383,8 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
             return self._handle_delete()
         if path == "/api/files/move":
             return self._handle_move()
+        if path == "/api/files/copy":
+            return self._handle_copy()
         if path == "/api/files/upload":
             return self._handle_upload()
         if path == "/api/files/sync":
@@ -565,6 +567,28 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
         os.makedirs(os.path.dirname(new_abs), exist_ok=True)
         shutil.move(old_abs, new_abs)
         self._send_json(200, {"success": True, "oldPath": old, "newPath": new})
+
+    def _handle_copy(self):
+        body = self._parse_json_body()
+        src = body.get("sourcePath", "")
+        dest = body.get("destPath", "")
+        if not src or not dest:
+            return self._send_error(400, "sourcePath and destPath required")
+        src_abs = safe_path(src)
+        dest_abs = safe_path(dest)
+        if not os.path.exists(src_abs):
+            return self._send_error(404, "Source not found")
+        if os.path.exists(dest_abs):
+            return self._send_error(409, "Destination already exists")
+        os.makedirs(os.path.dirname(dest_abs), exist_ok=True)
+        if os.path.isdir(src_abs):
+            # Refuse to copy a directory into itself.
+            if dest_abs == src_abs or dest_abs.startswith(src_abs + os.sep):
+                return self._send_error(400, "Cannot copy a folder into itself")
+            shutil.copytree(src_abs, dest_abs)
+        else:
+            shutil.copy2(src_abs, dest_abs)
+        self._send_json(200, {"success": True, "sourcePath": src, "destPath": dest})
 
     def _handle_upload(self):
         ct = self.headers.get("Content-Type", "")

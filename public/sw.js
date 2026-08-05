@@ -1,4 +1,4 @@
-const VERSION = 'pdrive-v42'
+const VERSION = 'pdrive-v43'
 const CACHE_NAME = `pdrive-${VERSION}`
 
 // App shell precached on install so the first offline load works.
@@ -23,6 +23,7 @@ const APP_SHELL = [
   '/js/editors/imageEditor.js',
   '/js/editors/markdownEditor.js',
   '/js/editors/csvEditor.js',
+  '/js/editors/chartRenderer.js',
   '/js/editors/pdfViewer.js',
   '/js/editors/docxViewer.js',
   '/icons/android-chrome-192x192.png',
