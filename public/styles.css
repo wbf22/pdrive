@@ -464,6 +464,7 @@ body {
   flex: 1;
   overflow: auto;
   background-color: var(--bg-dark);
+  position: relative;
 }
 
 .csv-table {
@@ -499,6 +500,8 @@ body {
 
 .csv-cell {
   cursor: cell;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .csv-cell.wrapped {
@@ -516,8 +519,34 @@ body {
   background-color: rgba(137, 180, 250, 0.30);
 }
 
-.csv-selecting {
+.csv-selection-handle {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--primary);
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  z-index: 30;
   touch-action: none;
+  cursor: grab;
+  display: none;
+}
+
+.csv-selection-handle.tl {
+  transform: translate(calc(-50% - 5px), calc(-50% - 5px));
+}
+
+.csv-selection-handle.br {
+  transform: translate(calc(-50% + 5px), calc(-50% + 5px));
+}
+
+.csv-selection-handle:active {
+  cursor: grabbing;
+}
+
+.csv-handle-dragging .csv-selection-handle {
+  pointer-events: none;
 }
 
 .csv-inline-input {
@@ -528,6 +557,8 @@ body {
   color: inherit;
   font-family: inherit;
   outline: none;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 /* Markdown Editor */

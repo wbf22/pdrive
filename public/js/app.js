@@ -532,63 +532,73 @@ class PDriveApp {
   }
 
   // ----- Auth Flow --------------------------------------------------
+  // Offline-first startup: render cached content immediately, then probe the
+  // server in the background and upgrade to online mode if it responds.
   async initAuth() {
     // Populate _serverUrl from storage first so the saved-password key
     // ('pdrive_pass_' + serverUrl) resolves to the same location it was saved.
     api.loadServerUrl()
     const saved = this.getSavedPassword()
-    let triedSavedLogin = false
 
-    // Auto-login with a saved (non-PIN) password so the unlock popup only
-    // appears when nothing is remembered (or the password is PIN-protected).
-    if (!api.getToken() && saved && !saved.pin) {
-      triedSavedLogin = true
-      try {
-        await api.login(saved.data)
-      } catch { /* handled below */ }
+    // Render the offline tree from cache immediately — never block startup on
+    // the network. The connectivity probe runs in parallel with the IndexedDB
+    // read (skipped entirely when the OS already reports offline).
+    const probe = navigator.onLine === false
+      ? Promise.resolve(false)
+      : api.checkConnectivity(1500)
+    const offlineFiles = await db.getAllOfflineFiles()
+    const hasOfflineFiles = offlineFiles.length > 0
+    if (hasOfflineFiles) {
+      this.isOnline = false
+      this.updateStatusIndicator()
+      await this.loadOfflineTree()
     }
 
-    // Verify the token actually works. Tokens live only in server memory, so a
-    // server restart invalidates every token. Without this check listFiles()
-    // would 401 and the tree would silently stay empty.
-    if (api.getToken()) {
-      try {
-        await api.listFiles('/')
-        this.isOnline = true
-        this.updateStatusIndicator()
-        await this.syncAndReload()
-        return
-      } catch {
-        // On 401 apiPost() clears the token. If it's still set, the server was
-        // just unreachable — go straight to the offline fallback.
-        if (api.getToken()) {
-          return this.showOfflineFallback()
-        }
-        // Token was invalidated — fall through and re-login below.
+    const connected = await probe
+    if (!connected) return this.finishOfflineStartup(hasOfflineFiles)
+
+    // Server reachable — upgrade to online mode.
+    this.isOnline = true
+    this.updateStatusIndicator()
+    try {
+      // Auto-login with a saved (non-PIN) password so the unlock popup only
+      // appears when nothing is remembered (or the password is PIN-protected).
+      if (!api.getToken() && saved && !saved.pin) {
+        try { await api.login(saved.data) } catch { /* handled below */ }
       }
-    }
 
-    // Token missing or invalidated (e.g. server restart). Re-authenticate with
-    // the saved password before resorting to the login screen.
-    if (saved && !saved.pin && !triedSavedLogin) {
-      try {
+      // Verify the token actually works. Tokens live only in server memory, so
+      // a server restart invalidates every token. Without this check
+      // listFiles() would 401 and the tree would silently stay empty.
+      if (api.getToken()) {
+        try {
+          await api.listFiles('/')
+          await this.syncAndReload()
+          return
+        } catch {
+          // On 401 apiPost() clears the token. If it's still set, the server
+          // became unreachable mid-flight — drop back to offline.
+          if (api.getToken()) return this.finishOfflineStartup(hasOfflineFiles)
+          // Token was invalidated — fall through and re-login below.
+        }
+      }
+
+      // Token missing or invalidated (e.g. server restart). Re-authenticate
+      // with the saved password before resorting to the login screen.
+      if (saved && !saved.pin) {
         await api.login(saved.data)
-        this.isOnline = true
-        this.updateStatusIndicator()
         await this.syncAndReload()
         return
-      } catch { /* wrong password or unreachable — fall through */ }
-    }
+      }
+    } catch { /* wrong password or unreachable — fall through */ }
 
-    return this.showOfflineFallback()
+    this.showLogin()
   }
 
-  async showOfflineFallback() {
+  finishOfflineStartup(hasOfflineFiles) {
     this.isOnline = false
     this.updateStatusIndicator()
-    const offlineFiles = await db.getAllOfflineFiles()
-    if (offlineFiles.length > 0) {
-      this.loadOfflineTree()
+    if (hasOfflineFiles) {
       this.maybeOpenDeepLink()
       if (!this.activeFilePath) this.renderHomeView()
     } else if (api.loadServerUrl()) {

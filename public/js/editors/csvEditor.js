@@ -17,6 +17,8 @@ export class CSVEditor {
     this.selection = null; // { r1, c1, r2, c2 } normalized; null = single cell
     this.zoom = 1;
     this._cellGesture = null;
+    this._handleDrag = null;
+    this._cellMenu = null;
     this._suppressClick = false;
   }
 
@@ -193,8 +195,6 @@ export class CSVEditor {
           </div>
           <div class="csv-actions">
             <input type="color" id="csvColorPicker" title="Cell Text Color" value="#00ffaa" />
-            <button class="btn btn-sm" id="csvCopyBtn" title="Copy selection (TSV)">Copy</button>
-            <button class="btn btn-sm" id="csvPasteBtn" title="Paste from clipboard">Paste</button>
             <button class="btn btn-sm" id="csvWrapBtn" title="Wrap text in this cell">Wrap</button>
             <button class="btn btn-sm" id="csvAddRowBtn">+ Row</button>
             <button class="btn btn-sm" id="csvAddColBtn">+ Col</button>
@@ -214,6 +214,8 @@ export class CSVEditor {
             </thead>
             <tbody id="csvBody"></tbody>
           </table>
+          <div class="csv-selection-handle tl" id="csvHandleTL" title="Drag to select"></div>
+          <div class="csv-selection-handle br" id="csvHandleBR" title="Drag to select"></div>
         </div>
       </div>
     `;
@@ -234,13 +236,18 @@ export class CSVEditor {
     this.container.querySelector('#csvAddRowBtn').addEventListener('click', () => this.addRow());
     this.container.querySelector('#csvAddColBtn').addEventListener('click', () => this.addCol());
     this.container.querySelector('#csvSaveBtn').addEventListener('click', () => this.save());
-    this.container.querySelector('#csvCopyBtn').addEventListener('click', () => this.copySelection());
-    this.container.querySelector('#csvPasteBtn').addEventListener('click', () => this.pasteSelection());
     this.container.querySelector('#csvWrapBtn').addEventListener('click', () => this.toggleWrap());
     this.colorPicker.addEventListener('change', (e) => this.onColorChange(e.target.value));
     this.container.querySelector('#csvZoomIn').addEventListener('click', () => this.setZoom(this.zoom + 0.1));
     this.container.querySelector('#csvZoomOut').addEventListener('click', () => this.setZoom(this.zoom - 0.1));
     this.container.querySelector('#csvZoomReset').addEventListener('click', () => this.setZoom(1));
+
+    this._handles = {
+      tl: this.container.querySelector('#csvHandleTL'),
+      br: this.container.querySelector('#csvHandleBR'),
+    };
+    this._handles.tl.addEventListener('pointerdown', (e) => this._startHandleDrag(e, 'tl'));
+    this._handles.br.addEventListener('pointerdown', (e) => this._startHandleDrag(e, 'br'));
 
     // Desktop: ctrl+wheel zoom anchored at the cursor
     this.tableContainer.addEventListener('wheel', (e) => {
@@ -268,26 +275,64 @@ export class CSVEditor {
     this._containerPointerDown = (e) => this._gridPointerDown(e);
     this._onGridPointerMove = (e) => this._gridPointerMove(e);
     this._onGridPointerUp = (e) => this._gridPointerUp(e);
+    this._onHandleDragMove = (e) => this._handleDragMove(e);
+    this._onHandleDragEnd = (e) => this._endHandleDrag(e);
+    this._onCellMenuDismiss = (e) => {
+      if (this._cellMenu && !this._cellMenu.contains(e.target)) {
+        this._closeCellMenu();
+      }
+    };
+    this._onCellMenuScroll = () => this._closeCellMenu();
+    this._onGridContextMenu = (e) => {
+      const cell = e.target.closest && e.target.closest('.csv-cell');
+      if (!cell) return;
+      e.preventDefault();
+      const r = parseInt(cell.getAttribute('data-r'));
+      const c = parseInt(cell.getAttribute('data-c'));
+      if (this._activeInlineInput) this._commitInlineEdit();
+      if (!this._isInSelection(r, c)) {
+        this.selectCell(r, c);
+      }
+      this._showCellMenu(e.clientX, e.clientY, { r, c });
+    };
     this._onSecondPointerDown = (e) => {
       if (this._cellGesture && e.pointerId !== this._cellGesture.pointerId) {
         this._cancelCellGesture();
       }
+      if (this._handleDrag && e.pointerId !== this._handleDrag.pointerId) {
+        this._endHandleDrag(e);
+      }
     };
     this.tableContainer.addEventListener('pointerdown', this._containerPointerDown);
+    this.tableContainer.addEventListener('contextmenu', this._onGridContextMenu);
     document.addEventListener('pointermove', this._onGridPointerMove);
     document.addEventListener('pointerup', this._onGridPointerUp);
     document.addEventListener('pointercancel', this._onGridPointerUp);
+    document.addEventListener('pointermove', this._onHandleDragMove);
+    document.addEventListener('pointerup', this._onHandleDragEnd);
+    document.addEventListener('pointercancel', this._onHandleDragEnd);
     document.addEventListener('pointerdown', this._onSecondPointerDown);
+    document.addEventListener('pointerdown', this._onCellMenuDismiss, true);
+    document.addEventListener('scroll', this._onCellMenuScroll, true);
   }
 
   _teardownSelectionGesture() {
     if (this.tableContainer && this._containerPointerDown) {
       this.tableContainer.removeEventListener('pointerdown', this._containerPointerDown);
     }
+    if (this.tableContainer && this._onGridContextMenu) {
+      this.tableContainer.removeEventListener('contextmenu', this._onGridContextMenu);
+    }
     document.removeEventListener('pointermove', this._onGridPointerMove);
     document.removeEventListener('pointerup', this._onGridPointerUp);
     document.removeEventListener('pointercancel', this._onGridPointerUp);
+    document.removeEventListener('pointermove', this._onHandleDragMove);
+    document.removeEventListener('pointerup', this._onHandleDragEnd);
+    document.removeEventListener('pointercancel', this._onHandleDragEnd);
     document.removeEventListener('pointerdown', this._onSecondPointerDown);
+    document.removeEventListener('pointerdown', this._onCellMenuDismiss, true);
+    document.removeEventListener('scroll', this._onCellMenuScroll, true);
+    this._closeCellMenu();
   }
 
   _setupKeyboard() {
@@ -319,6 +364,7 @@ export class CSVEditor {
         cell.classList.toggle('selected', !!this.selectedCell && this.selectedCell.r === r && this.selectedCell.c === c);
       });
     }
+    this._positionHandles();
     if (!this.selectedCell) return;
     const { r, c } = this.selectedCell;
     const cellName = `${this.colToName(c)}${r + 1}`;
@@ -338,6 +384,13 @@ export class CSVEditor {
     this._applySelectionUI();
   }
 
+  _deselect() {
+    this.selectedCell = null;
+    this.selection = null;
+    this.anchor = null;
+    this._applySelectionUI();
+  }
+
   setZoom(newZoom, clientX, clientY) {
     const clamped = Math.min(2, Math.max(0.5, newZoom));
     if (Math.abs(clamped - this.zoom) < 0.001) return;
@@ -352,6 +405,7 @@ export class CSVEditor {
     this.zoomLabel.textContent = `${Math.round(this.zoom * 100)}%`;
     this.tableContainer.scrollLeft = (sx + vx) * k - vx;
     this.tableContainer.scrollTop = (sy + vy) * k - vy;
+    this._positionHandles();
   }
 
   buildGridUI() {
@@ -397,13 +451,7 @@ export class CSVEditor {
         }
         const r = parseInt(cell.getAttribute('data-r'));
         const c = parseInt(cell.getAttribute('data-c'));
-        if (e.shiftKey) {
-          this._commitInlineEdit();
-          this.selectCell(r, c, true);
-          return;
-        }
-        this.selectCell(r, c);
-        this.startDirectEdit(cell, r, c);
+        this.selectCell(r, c, e.shiftKey);
       });
     });
 
@@ -779,6 +827,10 @@ export class CSVEditor {
     if (editing) return;
 
     if (e.key === 'Escape') {
+      if (this._cellMenu) {
+        this._closeCellMenu();
+        return;
+      }
       this._collapseSelection();
       return;
     }
@@ -790,6 +842,18 @@ export class CSVEditor {
     if (e.key === 'Delete' || e.key === 'Backspace') {
       e.preventDefault();
       this.clearSelection();
+      return;
+    }
+
+    // Type-to-edit: typing a printable character starts editing the selected
+    // cell, replacing its current contents (like Excel).
+    if (this.selectedCell && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && !e.isComposing) {
+      e.preventDefault();
+      this._closeCellMenu();
+      this._commitInlineEdit();
+      const { r, c } = this.selectedCell;
+      this.startDirectEdit(this._cellElFor(r, c), r, c);
+      if (this._activeInlineInput) this._activeInlineInput.value = e.key;
       return;
     }
 
@@ -812,32 +876,27 @@ export class CSVEditor {
   }
 
   // ----- Mobile touch selection gesture -------------------------------
+  // Long-press a cell to open the action menu; drag the corner handles to
+  // extend the selection. Container scrolling stays natural.
 
   _gridPointerDown(e) {
     this._suppressClick = false;
+    this._pendingTouchTap = false;
     if (e.pointerType !== 'touch') return;
+    this._closeCellMenu();
     if (this._cellGesture) {
       this._cancelCellGesture();
       return;
     }
+    this._pendingTouchTap = true;
     this._cellGesture = {
       pointerId: e.pointerId,
       startX: e.clientX,
       startY: e.clientY,
       lastX: e.clientX,
       lastY: e.clientY,
-      armed: false,
     };
-    const cell = e.target.closest && e.target.closest('.csv-cell');
-    const touched = cell
-      ? { r: parseInt(cell.getAttribute('data-r')), c: parseInt(cell.getAttribute('data-c')) }
-      : this.selectedCell;
-    if (touched) {
-      this.anchor = this.selection
-        ? { r: this.selectedCell.r, c: this.selectedCell.c }
-        : touched;
-    }
-    this._cellGestureTimer = setTimeout(() => this._armCellGesture(), 350);
+    this._cellGestureTimer = setTimeout(() => this._openCellMenu(), 450);
   }
 
   _gridPointerMove(e) {
@@ -845,14 +904,9 @@ export class CSVEditor {
     if (!g || e.pointerId !== g.pointerId) return;
     g.lastX = e.clientX;
     g.lastY = e.clientY;
-    if (!g.armed) {
-      if (Math.abs(e.clientX - g.startX) > 3 || Math.abs(e.clientY - g.startY) > 3) {
-        this._cancelCellGesture();
-      }
-      return;
+    if (Math.abs(e.clientX - g.startX) > 8 || Math.abs(e.clientY - g.startY) > 8) {
+      this._cancelCellGesture();
     }
-    this._extendCellToPoint(e.clientX, e.clientY);
-    this._edgeScroll(e.clientX, e.clientY);
   }
 
   _gridPointerUp(e) {
@@ -866,31 +920,150 @@ export class CSVEditor {
       clearTimeout(this._cellGestureTimer);
       this._cellGestureTimer = null;
     }
-    if (this.tableContainer) this.tableContainer.classList.remove('csv-selecting');
     this._cellGesture = null;
   }
 
-  _armCellGesture() {
-    this._cellGestureTimer = null;
-    if (!this._cellGesture) return;
-    this._cellGesture.armed = true;
-    this.tableContainer.classList.add('csv-selecting');
+  _openCellMenu() {
+    const g = this._cellGesture;
+    if (!g) return;
+    this._cellGesture = null;
+    if (this._cellGestureTimer) {
+      clearTimeout(this._cellGestureTimer);
+      this._cellGestureTimer = null;
+    }
     this._suppressClick = true;
     this._commitInlineEdit();
-    this._extendCellToPoint(this._cellGesture.lastX, this._cellGesture.lastY);
+    const cell = this._cellFromPoint(g.startX, g.startY);
+    if (cell && !this._isInSelection(cell.r, cell.c)) {
+      this.selectCell(cell.r, cell.c);
+    }
+    this._showCellMenu(g.startX, g.startY, cell);
   }
 
-  _extendCellToPoint(x, y) {
+  // ----- Corner selection handles -------------------------------------
+
+  _startHandleDrag(e, corner) {
+    if (e.button !== undefined && e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this._closeCellMenu();
+    this._commitInlineEdit();
+    this._suppressClick = true;
+    const rect = this._getSelectionRect();
+    this._handleDrag = {
+      pointerId: e.pointerId,
+      corner,
+      anchor: corner === 'br' ? { r: rect.r1, c: rect.c1 } : { r: rect.r2, c: rect.c2 },
+    };
+    this.anchor = this._handleDrag.anchor;
+    this.tableContainer.classList.add('csv-handle-dragging');
+  }
+
+  _handleDragMove(e) {
+    const h = this._handleDrag;
+    if (!h || e.pointerId !== h.pointerId) return;
+    const cell = this._cellFromPoint(e.clientX, e.clientY);
+    if (cell) this.selectCell(cell.r, cell.c, true);
+    this._edgeScroll(e.clientX, e.clientY);
+  }
+
+  _endHandleDrag(e) {
+    const h = this._handleDrag;
+    if (!h || (e && e.pointerId !== h.pointerId)) return;
+    this._handleDrag = null;
+    if (this.tableContainer) this.tableContainer.classList.remove('csv-handle-dragging');
+  }
+
+  _positionHandles() {
+    if (!this._handles || !this.tableBody || !this.tableContainer) return;
+    const hide = () => {
+      this._handles.tl.style.display = 'none';
+      this._handles.br.style.display = 'none';
+    };
+    if (!this.selectedCell) {
+      hide();
+      return;
+    }
+    const rect = this._getSelectionRect();
+    const contRect = this.tableContainer.getBoundingClientRect();
+    const place = (handle, cell, corner) => {
+      if (!handle) return;
+      if (!cell) {
+        handle.style.display = 'none';
+        return;
+      }
+      const cr = cell.getBoundingClientRect();
+      if (corner === 'br') {
+        handle.style.left = (cr.right - contRect.left + this.tableContainer.scrollLeft) + 'px';
+        handle.style.top = (cr.bottom - contRect.top + this.tableContainer.scrollTop) + 'px';
+      } else {
+        handle.style.left = (cr.left - contRect.left + this.tableContainer.scrollLeft) + 'px';
+        handle.style.top = (cr.top - contRect.top + this.tableContainer.scrollTop) + 'px';
+      }
+      handle.style.display = 'block';
+    };
+    place(this._handles.tl, this._cellElFor(rect.r1, rect.c1), 'tl');
+    place(this._handles.br, this._cellElFor(rect.r2, rect.c2), 'br');
+  }
+
+  _cellElFor(r, c) {
+    return this.tableBody.querySelector(`.csv-cell[data-r="${r}"][data-c="${c}"]`);
+  }
+
+  // ----- Cell action menu (long-press / right-click) ------------------
+
+  _showCellMenu(x, y, cell) {
+    this._closeCellMenu();
+    const menu = document.createElement('div');
+    menu.className = 'context-menu csv-cell-menu';
+    const items = [
+      {
+        label: 'Edit',
+        action: () => {
+          this._closeCellMenu();
+          if (cell) this.startDirectEdit(this._cellElFor(cell.r, cell.c), cell.r, cell.c);
+        },
+      },
+      { label: 'Cut', action: () => { this._closeCellMenu(); this.cutSelection(); } },
+      { label: 'Copy', action: () => { this._closeCellMenu(); this.copySelection(); } },
+      { label: 'Paste', action: () => { this._closeCellMenu(); this.pasteSelection(); } },
+      { label: 'Clear', action: () => { this._closeCellMenu(); this.clearSelection(); } },
+    ];
+    for (const item of items) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ctx-item';
+      btn.textContent = item.label;
+      btn.addEventListener('click', () => {
+        item.action();
+        this._deselect();
+      });
+      menu.appendChild(btn);
+    }
+    document.body.appendChild(menu);
+    const mw = menu.offsetWidth;
+    const mh = menu.offsetHeight;
+    let left = x + 8;
+    let top = y + 8;
+    if (left + mw > window.innerWidth - 4) left = Math.max(4, window.innerWidth - mw - 4);
+    if (top + mh > window.innerHeight - 4) top = Math.max(4, window.innerHeight - mh - 4);
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+    this._cellMenu = menu;
+  }
+
+  _closeCellMenu() {
+    if (this._cellMenu) {
+      this._cellMenu.remove();
+      this._cellMenu = null;
+    }
+  }
+
+  _cellFromPoint(x, y) {
     const el = document.elementFromPoint(x, y);
     const cell = el ? el.closest('.csv-cell') : null;
-    if (!cell) return;
-    const r = parseInt(cell.getAttribute('data-r'));
-    const c = parseInt(cell.getAttribute('data-c'));
-    if (this.anchor) {
-      this.selectCell(r, c, true);
-    } else {
-      this.selectCell(r, c);
-    }
+    if (!cell) return null;
+    return { r: parseInt(cell.getAttribute('data-r')), c: parseInt(cell.getAttribute('data-c')) };
   }
 
   _edgeScroll(x, y) {
