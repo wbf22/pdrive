@@ -956,7 +956,7 @@ class PDriveApp {
         csvEd.render(content)
         this.activeEditor = csvEd
       } else if (ext === 'md') {
-        const mdEd = new MarkdownEditor(this.editorContainer, md => this.saveFile(md))
+        const mdEd = new MarkdownEditor(this.editorContainer, md => this.saveFile(md), msg => this.showToast(msg))
         mdEd.render(content)
         this.activeEditor = mdEd
       } else if (ext === 'pdf') {

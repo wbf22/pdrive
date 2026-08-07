@@ -44,6 +44,7 @@ export class CSVEditor {
     this._history = [];
     this._historyIndex = -1;
     this._lastCommit = null; // { key, time } — used to coalesce rapid edits
+    this._clipboardStyles = null; // styles carried with the last in-app copy
     this._chartDialog = null;
     this._rangeCapture = null;
     this._chartRefreshTimer = null;
@@ -60,22 +61,19 @@ export class CSVEditor {
     this.floatedRows = new Set();
     this.floatedCols = new Set();
 
-    const lines = csvText.split(/\r?\n/);
-    const dataLines = [];
+    const rows = this.tokenizeCSV(csvText);
 
-    for (let line of lines) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith('<meta>')) {
-        this.parseMetaLine(trimmed);
+    for (let i = 0; i < rows.length; i++) {
+      const cells = rows[i];
+      const single = cells.length === 1 ? cells[0] : null;
+      if (single !== null && single.trim().startsWith('<meta>')) {
+        this.parseMetaLine(single.trim());
+      } else if (i === rows.length - 1 && single === '') {
+        // Skip trailing empty line
+        continue;
       } else {
-        dataLines.push(line);
+        this.grid.push(cells);
       }
-    }
-
-    // Parse CSV data lines using proper CSV parsing
-    for (let line of dataLines) {
-      if (line === '' && dataLines.indexOf(line) === dataLines.length - 1) continue;
-      this.grid.push(this.parseCSVLine(line));
     }
 
     // Ensure minimum 10x10 grid for comfortable editing
@@ -93,29 +91,56 @@ export class CSVEditor {
     }
   }
 
-  parseCSVLine(line) {
-    const row = [];
-    let insideQuote = false;
+  // Properly tokenize a full CSV string, honoring quoted fields (which may
+  // contain commas and newlines). Returns an array of rows, each an array of cells.
+  tokenizeCSV(text) {
+    const rows = [];
+    let row = [];
     let entry = '';
+    let inQuotes = false;
+    let i = 0;
+    const n = text.length;
 
-    for (let i = 0; i < line.length; i++) {
-      const c = line[i];
-      if (c === '"') {
-        if (insideQuote && line[i + 1] === '"') {
-          entry += '"';
+    while (i < n) {
+      const c = text[i];
+      if (inQuotes) {
+        if (c === '"') {
+          if (text[i + 1] === '"') {
+            entry += '"';
+            i++;
+          } else {
+            inQuotes = false;
+          }
+        } else {
+          entry += c;
+        }
+        i++;
+      } else {
+        if (c === '"') {
+          inQuotes = true;
+          i++;
+        } else if (c === ',') {
+          row.push(entry);
+          entry = '';
+          i++;
+        } else if (c === '\n') {
+          row.push(entry);
+          rows.push(row);
+          row = [];
+          entry = '';
+          i++;
+        } else if (c === '\r') {
           i++;
         } else {
-          insideQuote = !insideQuote;
+          entry += c;
+          i++;
         }
-      } else if (c === ',' && !insideQuote) {
-        row.push(entry);
-        entry = '';
-      } else {
-        entry += c;
       }
     }
+
     row.push(entry);
-    return row;
+    rows.push(row);
+    return rows;
   }
 
   parseMetaLine(line) {
@@ -933,14 +958,20 @@ export class CSVEditor {
     if (!this.selectedCell) return;
     const { r1, c1, r2, c2 } = this._getSelectionRect();
     const lines = [];
+    const styleRows = [];
     for (let r = r1; r <= r2; r++) {
       const row = [];
+      const styleRow = [];
       for (let c = c1; c <= c2; c++) {
         row.push(this.tsvEscape(this.getRawValue(r, c)));
+        const cellRef = `${this.colToName(c).toLowerCase()}${r + 1}`;
+        styleRow.push(this.styles[cellRef] ? { ...this.styles[cellRef] } : null);
       }
       lines.push(row.join('\t'));
+      styleRows.push(styleRow);
     }
     this._writeClipboard(lines.join('\n'));
+    this._clipboardStyles = styleRows;
     const count = (r2 - r1 + 1) * (c2 - c1 + 1);
     this.onNotify?.(`Copied ${count} cell${count === 1 ? '' : 's'}`);
   }
@@ -957,6 +988,7 @@ export class CSVEditor {
     }
     const rows = tsv.split(/\r?\n/);
     const { r: ar, c: ac } = this.selectedCell;
+    const styles = this._clipboardStyles;
     let written = 0;
     for (let dr = 0; dr < rows.length; dr++) {
       const values = this.parseTSVLine(rows[dr]);
@@ -966,6 +998,10 @@ export class CSVEditor {
         while (this.grid.length <= r) this.grid.push([]);
         this.grid[r][c] = '';
         this.updateCellValue(r, c, values[dc]);
+        const cellRef = `${this.colToName(c).toLowerCase()}${r + 1}`;
+        if (styles && styles[dr] && styles[dr][dc]) {
+          this.styles[cellRef] = { ...styles[dr][dc] };
+        }
         written++;
       }
     }
@@ -987,6 +1023,8 @@ export class CSVEditor {
     for (let r = r1; r <= r2; r++) {
       for (let c = c1; c <= c2; c++) {
         this.updateCellValue(r, c, '');
+        const cellRef = `${this.colToName(c).toLowerCase()}${r + 1}`;
+        delete this.styles[cellRef];
         count++;
       }
     }
