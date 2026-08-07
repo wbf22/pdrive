@@ -9,6 +9,7 @@ import { DocxViewer } from './editors/docxViewer.js'
 import * as api from './api.js'
 import * as db from './db.js'
 import * as fileStore from './fileStore.js'
+import { loadScript } from './lazyLoad.js'
 
 class PDriveApp {
   constructor() {
@@ -960,7 +961,11 @@ class PDriveApp {
         mdEd.render(content)
         this.activeEditor = mdEd
       } else if (ext === 'pdf') {
-        const viewer = new PDFViewer(this.editorContainer, null)
+        const viewer = new PDFViewer(
+          this.editorContainer,
+          (base64Data, encoding) => this.saveFile(base64Data, encoding || 'base64'),
+          msg => this.showToast(msg)
+        )
         viewer.render(filePath, fileData.content)
         this.activeEditor = viewer
       } else if (ext === 'docx') {
@@ -1218,24 +1223,82 @@ class PDriveApp {
     this.actionTitle.textContent = '📄 New File'
     this.actionBody.innerHTML = `
       <div class="input-group">
-        <label>File path (relative to root)</label>
-        <input type="text" id="newFileInput" placeholder="e.g. notes/ideas.md" />
+        <label>File path / name (relative to root)</label>
+        <input type="text" id="newFileInput" placeholder="e.g. document.pdf, notes/ideas.md" />
+      </div>
+      <div class="input-group">
+        <label>File Type Preset</label>
+        <select id="newFileTypeSelect" class="form-input">
+          <option value="custom">Blank Text / Custom Extension (.txt, .md, .js, etc.)</option>
+          <option value="pdf">PDF Document (.pdf)</option>
+          <option value="image">Image File (.png)</option>
+        </select>
       </div>`
     this.actionFooter.innerHTML = `<button class="btn btn-primary" id="confirmNewFileBtn">Create File</button>`
     this.actionModal.classList.remove('hidden')
+
+    const fileInput = document.getElementById('newFileInput');
+    const typeSelect = document.getElementById('newFileTypeSelect');
+
+    typeSelect.addEventListener('change', () => {
+      let val = fileInput.value.trim();
+      if (!val) return;
+      if (typeSelect.value === 'pdf') {
+        if (!val.toLowerCase().endsWith('.pdf')) {
+          val = val.replace(/\.[^/.]+$/, '') + '.pdf';
+          if (!val.endsWith('.pdf')) val += '.pdf';
+          fileInput.value = val;
+        }
+      } else if (typeSelect.value === 'image') {
+        if (!val.toLowerCase().endsWith('.png') && !val.toLowerCase().endsWith('.jpg') && !val.toLowerCase().endsWith('.jpeg')) {
+          val = val.replace(/\.[^/.]+$/, '') + '.png';
+          if (!val.endsWith('.png')) val += '.png';
+          fileInput.value = val;
+        }
+      }
+    });
+
     document.getElementById('confirmNewFileBtn').onclick = async () => {
-      const name = document.getElementById('newFileInput').value.trim()
+      let name = fileInput.value.trim()
       if (!name) return
+      const preset = typeSelect.value;
+      if (preset === 'pdf' && !name.toLowerCase().endsWith('.pdf')) name += '.pdf';
+      if (preset === 'image' && !name.toLowerCase().endsWith('.png') && !name.toLowerCase().endsWith('.jpg') && !name.toLowerCase().endsWith('.jpeg')) name += '.png';
+
       const target = name.startsWith('/') ? name : '/' + name
       try {
-        await api.writeFile(target, '')
+        let content = '';
+        let encoding = '';
+        if (preset === 'pdf') {
+          if (!window.PDFLib) { await loadScript('/lib/pdf-lib.min.js'); }
+          const { PDFDocument } = window.PDFLib;
+          const doc = await PDFDocument.create();
+          doc.addPage([612, 792]);
+          const pdfBytes = await doc.save();
+          let binary = '';
+          const bytes = new Uint8Array(pdfBytes);
+          for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+          content = btoa(binary);
+          encoding = 'base64';
+        } else if (preset === 'image') {
+          const canvas = document.createElement('canvas');
+          canvas.width = 800;
+          canvas.height = 600;
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, 800, 600);
+          content = canvas.toDataURL('image/png').split(',')[1];
+          encoding = 'base64';
+        }
+
+        await fileStore.writeFile(target, content, encoding)
         this.actionModal.classList.add('hidden')
         this.showToast('File created')
         await this.loadTree()
         this.openFile(target)
       } catch (e) { alert('Failed: ' + e.message) }
     }
-    setTimeout(() => document.getElementById('newFileInput')?.focus(), 100)
+    setTimeout(() => fileInput?.focus(), 100)
   }
 
   showNewFolderModal() {

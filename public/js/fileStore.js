@@ -16,6 +16,16 @@ export function base64ToArrayBuffer(b64) {
   return bytes.buffer
 }
 
+export function uint8ArrayToBase64(bytes) {
+  let binary = ''
+  const chunkSize = 8192
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize)
+    binary += String.fromCharCode.apply(null, chunk)
+  }
+  return btoa(binary)
+}
+
 export async function readCached(path) {
   return db.getCachedFile(path)
 }

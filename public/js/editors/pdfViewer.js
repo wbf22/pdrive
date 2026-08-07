@@ -1,12 +1,14 @@
-import { downloadFile, base64ToArrayBuffer } from '../fileStore.js';
+import { downloadFile, base64ToArrayBuffer, uint8ArrayToBase64 } from '../fileStore.js';
 import { attachPinchZoom } from '../pinchZoom.js';
 import { initFullscreenButton } from '../fullscreen.js';
 import { loadScript } from '../lazyLoad.js';
+import { PDFEditor } from './pdfEditor.js';
 
 export class PDFViewer {
-  constructor(container, onSave) {
+  constructor(container, onSave, onToast) {
     this.container = container;
     this.onSave = onSave;
+    this.onToast = onToast;
     this.pdfDoc = null;
     this.pageNum = 1;
     this.pageRendering = false;
@@ -14,6 +16,8 @@ export class PDFViewer {
     this.renderedScale = 1.0;
     this.scale = 1.0;
     this.filePath = '';
+    this.base64Content = null;
+    this.currentEditor = null;
   }
 
   async render(filePath, base64Content = null) {
@@ -27,6 +31,8 @@ export class PDFViewer {
         <div class="pdf-toolbar">
           <span class="file-path-badge">${this.escapeHTML(filePath)}</span>
           <div class="pdf-controls">
+            <button class="btn btn-sm btn-primary" id="pdfEditBtn" title="Edit PDF">✏️ Edit</button>
+            <span class="toolbar-divider"></span>
             <button class="btn btn-sm" id="pdfPrev" title="Previous Page">◀</button>
             <span class="pdf-page-info">
               Page <input type="number" id="pdfPageInput" value="1" min="1" class="pdf-page-input" />
@@ -61,9 +67,14 @@ export class PDFViewer {
         loadScript('/lib/pdf.min.js'),
       ]);
 
+      if (!base64Content) {
+        base64Content = uint8ArrayToBase64(new Uint8Array(arrayBuffer));
+      }
+      this.base64Content = base64Content;
+
       pdfjsLib.GlobalWorkerOptions.workerSrc = '/lib/pdf.worker.min.js';
 
-      const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+      const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer.slice(0) });
       this.pdfDoc = await loadingTask.promise;
 
       document.getElementById('pdfLoading').style.display = 'none';
@@ -72,6 +83,7 @@ export class PDFViewer {
 
       await this.renderPage(this.pageNum);
 
+      document.getElementById('pdfEditBtn').addEventListener('click', () => this.openEditor());
       document.getElementById('pdfPrev').addEventListener('click', () => this.onPrevPage());
       document.getElementById('pdfNext').addEventListener('click', () => this.onNextPage());
       document.getElementById('pdfPageInput').addEventListener('change', (e) => {
@@ -288,11 +300,37 @@ export class PDFViewer {
     }
   }
 
+  openEditor() {
+    this.currentEditor = new PDFEditor(this.container, {
+      onSave: (newBase64) => {
+        this.base64Content = newBase64;
+        if (this.onSave) {
+          this.onSave(newBase64, 'base64');
+        }
+      },
+      onClose: () => {
+        this.currentEditor = null;
+        this.render(this.filePath, this.base64Content);
+      },
+      onToast: (msg) => {
+        if (this.onToast) this.onToast(msg);
+      }
+    });
+    this.currentEditor.render(this.filePath, this.base64Content);
+  }
+
   save() {
-    // PDF viewer is read-only
+    if (this.currentEditor && typeof this.currentEditor.save === 'function') {
+      this.currentEditor.save();
+    } else if (this.onSave && this.base64Content) {
+      this.onSave(this.base64Content, 'base64');
+    }
   }
 
   destroy() {
+    if (this.currentEditor && this.currentEditor.destroy) {
+      this.currentEditor.destroy();
+    }
     clearTimeout(this._zoomTimer);
     if (this._detachFs) {
       this._detachFs();

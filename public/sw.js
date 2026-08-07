@@ -1,4 +1,4 @@
-const VERSION = 'pdrive-v47'
+const VERSION = 'pdrive-v48'
 const CACHE_NAME = `pdrive-${VERSION}`
 
 // App shell precached on install so the first offline load works.
@@ -10,6 +10,7 @@ const APP_SHELL = [
   '/manifest.json',
   '/lib/pdf.min.js',
   '/lib/pdf.worker.min.js',
+  '/lib/pdf-lib.min.js',
   '/lib/mammoth.browser.min.js',
   '/js/api.js',
   '/js/app.js',
@@ -25,6 +26,7 @@ const APP_SHELL = [
   '/js/editors/csvEditor.js',
   '/js/editors/chartRenderer.js',
   '/js/editors/pdfViewer.js',
+  '/js/editors/pdfEditor.js',
   '/js/editors/docxViewer.js',
   '/icons/android-chrome-192x192.png',
   '/icons/android-chrome-512x512.png',
