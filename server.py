@@ -8,6 +8,8 @@ Usage:
 Then open the frontend (on GitHub Pages or locally) and point it
 at http://<host>:8080.
 """
+from __future__ import annotations
+
 import os
 import sys
 import json

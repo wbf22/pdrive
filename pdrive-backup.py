@@ -2,8 +2,8 @@
 """PDrive backup client — sync server files to a local directory.
 
 Usage:
-    ./pdrive-backup.py --server http://192.168.1.100:8080 --password mysecret \\
-        --backup-dir ./pdrive_backup
+    ./pdrive-backup.py --server https://192.168.0.36:8080 --password mysecret \\
+        --backup-dir ./pdrive_backup --ca-cert certs/pdrive-ca.crt
 """
 
 import os
@@ -11,6 +11,7 @@ import sys
 import json
 import time
 import argparse
+import ssl
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -18,13 +19,25 @@ import shutil
 
 CHUNK_SIZE = 8192
 
+SSL_CONTEXT = None
+
 
 def main():
+    global SSL_CONTEXT
     parser = argparse.ArgumentParser(description="PDrive Backup Client")
     parser.add_argument("--server", required=True, help="PDrive server URL (e.g. http://192.168.1.100:8080)")
     parser.add_argument("--password", required=True, help="Server password")
     parser.add_argument("--backup-dir", default="./pdrive_backup", help="Local backup directory (default: ./pdrive_backup)")
+    parser.add_argument("--ca-cert", help="Path to the PDrive CA certificate to trust (for self-signed HTTPS)")
+    parser.add_argument("--insecure", action="store_true", help="Skip TLS certificate verification (not recommended)")
     args = parser.parse_args()
+
+    if args.insecure:
+        SSL_CONTEXT = ssl._create_unverified_context()
+    elif args.ca_cert:
+        SSL_CONTEXT = ssl.create_default_context(cafile=args.ca_cert)
+    else:
+        SSL_CONTEXT = ssl.create_default_context()
 
     server = args.server.rstrip("/")
     backup_dir = os.path.abspath(args.backup_dir)
@@ -79,7 +92,7 @@ def _login(server, password):
         data=json.dumps({"password": password}).encode(),
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req) as res:
+    with urllib.request.urlopen(req, context=SSL_CONTEXT) as res:
         data = json.loads(res.read())
     return data["token"]
 
@@ -108,7 +121,7 @@ def _sync(server, token, manifest):
             "Authorization": f"Bearer {token}",
         },
     )
-    with urllib.request.urlopen(req) as res:
+    with urllib.request.urlopen(req, context=SSL_CONTEXT) as res:
         data = json.loads(res.read())
     return data["modified"], data["deleted"]
 
@@ -121,7 +134,7 @@ def _download_file(server, token, path, size, backup_dir):
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
 
     try:
-        with urllib.request.urlopen(req) as src:
+        with urllib.request.urlopen(req, context=SSL_CONTEXT) as src:
             with open(local_path, "wb") as dst:
                 total = 0
                 last_pct = -1

@@ -74,6 +74,7 @@ export class MarkdownEditor {
     this.textarea.addEventListener('input', () => {
       this._pushHistory(this.textarea.value, 'type');
       this.updatePreview();
+      this._scheduleWriteback();
     });
 
     this.textarea.addEventListener('keydown', (e) => {
@@ -81,6 +82,7 @@ export class MarkdownEditor {
       if (!mod) return;
       if ((e.key === 's' || e.key === 'S')) {
         e.preventDefault();
+        this._flushWriteback();
         if (this.onSave) this.onSave(this.textarea.value);
         return;
       }
@@ -94,6 +96,7 @@ export class MarkdownEditor {
     });
 
     this.container.querySelector('#mdSaveBtn').addEventListener('click', () => {
+      this._flushWriteback();
       if (this.onSave) this.onSave(this.textarea.value);
     });
 
@@ -135,6 +138,7 @@ export class MarkdownEditor {
     this.container.querySelector('#mdModeRaw').addEventListener('click', () => this.setMode('raw'));
 
     this.updatePreview();
+    this._scheduleWriteback();
   }
 
   setMode(mode) {
@@ -174,7 +178,270 @@ export class MarkdownEditor {
       });
       this._configured = true;
     }
-    return marked.parse(md || '');
+    return marked.parse(this.applyEquations(md || ''));
+  }
+
+  // ----- Equations -----------------------------------------------------
+
+  /**
+   * Fold table equations into the Markdown. Equation lines sit immediately
+   * under a table as `cell=expression` (e.g. `c2=a2+b2`); the first line that
+   * is not wrapped in backticks ends the list. Columns are letters (a = 1st
+   * column) and rows count the data rows only — the header and separator are
+   * not addressable. Computed values replace the cells.
+   *
+   * When keepEquations is false (rendering) the equation lines are dropped,
+   * and when true (writing back to the source) they are preserved.
+   */
+  applyEquations(md, keepEquations = false) {
+    const lines = String(md).split('\n');
+    const out = [];
+    let i = 0;
+    while (i < lines.length) {
+      if (this._isTableLine(lines[i]) && this._isTableSeparator(lines[i + 1] || '')) {
+        let end = i;
+        while (end + 1 < lines.length && this._isTableLine(lines[end + 1])) end++;
+
+        let j = end + 1;
+        const defs = new Map();
+        while (j < lines.length && this._isEquationLine(lines[j])) {
+          const eq = this._parseEquation(lines[j]);
+          if (eq) defs.set(eq.name, eq.expr);
+          j++;
+        }
+
+        if (j > end + 1) {
+          const table = this._evaluateTable(lines.slice(i, end + 1), defs);
+          out.push(...table);
+          if (keepEquations) out.push(...lines.slice(end + 1, j));
+          else out.push('');
+          i = j;
+          continue;
+        }
+
+        out.push(...lines.slice(i, end + 1));
+        i = end + 1;
+        continue;
+      }
+      out.push(lines[i]);
+      i++;
+    }
+    return out.join('\n');
+  }
+
+  /** A line wrapped in backticks, the form an equation line takes. */
+  _isEquationLine(line) {
+    const t = (line || '').trim();
+    return t.length >= 2 && t.startsWith('`') && t.endsWith('`');
+  }
+
+  /** Parse `a5=d1*78` into { name: 'a5', expr: 'd1*78' }, or null. */
+  _parseEquation(line) {
+    const inner = line.trim().slice(1, -1);
+    const m = inner.match(/^\s*([A-Za-z]+[0-9]+)\s*=\s*(.+?)\s*$/);
+    if (!m) return null;
+    return { name: m[1].toLowerCase(), expr: m[2] };
+  }
+
+  /** Evaluate every equation against the table, replacing the cells. */
+  _evaluateTable(tableLines, defs) {
+    const rowNumbers = [];
+    let rowNum = 0;
+    for (let li = 0; li < tableLines.length; li++) {
+      if (li === 0 || this._isTableSeparator(tableLines[li])) rowNumbers.push(null);
+      else rowNumbers.push(++rowNum);
+    }
+
+    const cells = new Map();
+    for (let li = 0; li < tableLines.length; li++) {
+      const rn = rowNumbers[li];
+      if (!rn) continue;
+      const parts = this._parseTableCells(tableLines[li]);
+      for (let col = 0; col < parts.length; col++) {
+        cells.set(this._colName(col) + rn, { raw: parts[col] });
+      }
+    }
+
+    const values = new Map();
+    const errors = new Set();
+    const pending = new Set(defs.keys());
+
+    const resolve = (name) => {
+      if (values.has(name)) return { value: String(values.get(name)) };
+      if (errors.has(name)) return { failed: true };
+      const cell = cells.get(name);
+      if (!cell) return { failed: true };
+      const num = this._toNumber(cell.raw);
+      if (num === null) return { failed: true };
+      return { value: String(num) };
+    };
+
+    const attempt = (name) => {
+      const refs = this._refsIn(defs.get(name));
+      let unresolved = false;
+      let failed = false;
+      for (const ref of refs) {
+        const rn = ref.toLowerCase();
+        if (pending.has(rn)) { unresolved = true; continue; }
+        const r = resolve(rn);
+        if (r.failed) failed = true;
+      }
+      if (unresolved) return false;
+
+      const substituted = defs.get(name).replace(/[A-Za-z]+[0-9]+/g, (ref, offset, full) => {
+        const prev = full[offset - 1];
+        if (prev && /[A-Za-z0-9]/.test(prev)) return ref;
+        const r = resolve(ref.toLowerCase());
+        return r.failed ? '0' : r.value;
+      });
+
+      if (failed) { errors.add(name); return true; }
+      const result = this._evalExpr(substituted);
+      if (result === null) errors.add(name);
+      else values.set(name, result);
+      return true;
+    };
+
+    while (pending.size) {
+      let progressed = false;
+      for (const name of [...pending]) {
+        if (attempt(name)) { pending.delete(name); progressed = true; }
+      }
+      if (!progressed) {
+        for (const name of pending) errors.add(name);
+        break;
+      }
+    }
+
+    const results = new Map();
+    for (const [name, v] of values) results.set(name, this._formatNumber(v));
+    for (const name of errors) results.set(name, 'error');
+
+    return tableLines.map((line, li) => {
+      const rn = rowNumbers[li];
+      if (!rn) return line;
+      const parts = this._parseTableCells(line);
+      let changed = false;
+      for (let col = 0; col < parts.length; col++) {
+        const name = this._colName(col) + rn;
+        if (!results.has(name)) continue;
+        const value = results.get(name);
+        if (parts[col] !== value) { parts[col] = value; changed = true; }
+      }
+      return changed ? '| ' + parts.join(' | ') + ' |' : line;
+    });
+  }
+
+  /** Cell references in an expression, ignoring digits that precede a letter. */
+  _refsIn(expr) {
+    const refs = [];
+    const re = /[A-Za-z]+[0-9]+/g;
+    let m;
+    while ((m = re.exec(expr))) {
+      const prev = expr[m.index - 1];
+      if (prev && /[A-Za-z0-9]/.test(prev)) continue;
+      refs.push(m[0].toLowerCase());
+    }
+    return refs;
+  }
+
+  /** Cells of a table row, without the outer pipes. */
+  _parseTableCells(line) {
+    const inner = line.replace(/^\s*\|/, '').replace(/\|\s*$/, '');
+    return inner.split('|').map(c => c.trim());
+  }
+
+  /** 0-based column index to a lowercase letter name (0 -> a, 26 -> aa). */
+  _colName(col) {
+    let name = '';
+    col++;
+    while (col > 0) {
+      const rem = (col - 1) % 26;
+      name = String.fromCharCode(97 + rem) + name;
+      col = Math.floor((col - 1) / 26);
+    }
+    return name;
+  }
+
+  /** A plain numeric string to a number, or null when it is not one. */
+  _toNumber(str) {
+    const t = String(str).trim();
+    if (!/^[+-]?(\d+\.?\d*|\.\d+)$/.test(t)) return null;
+    const n = Number(t);
+    return Number.isNaN(n) ? null : n;
+  }
+
+  /** Evaluate a substituted arithmetic expression, or null on failure. */
+  _evalExpr(expr) {
+    if (!/^[0-9+\-*/().%\s]+$/.test(expr)) return null;
+    try {
+      const result = Function(`"use strict"; return (${expr});`)();
+      return typeof result === 'number' && Number.isFinite(result) ? result : null;
+    } catch {
+      return null;
+    }
+  }
+
+  _formatNumber(v) {
+    if (Number.isInteger(v)) return String(v);
+    return String(Number.parseFloat(v.toPrecision(12)));
+  }
+
+  // ----- Equation write-back -------------------------------------------
+
+  /** Recompute after a pause so cells fill in without fighting the cursor. */
+  _scheduleWriteback() {
+    if (this._writebackTimer) clearTimeout(this._writebackTimer);
+    this._writebackTimer = setTimeout(() => {
+      this._writebackTimer = null;
+      this._writebackEquations();
+    }, 400);
+  }
+
+  /** Run any pending write-back right away (used before saving). */
+  _flushWriteback() {
+    if (this._writebackTimer) {
+      clearTimeout(this._writebackTimer);
+      this._writebackTimer = null;
+    }
+    this._writebackEquations();
+  }
+
+  /** Fold computed values into the source, keeping the equation lines. */
+  _writebackEquations() {
+    const oldValue = this.textarea.value;
+    const newValue = this.applyEquations(oldValue, true);
+    if (newValue === oldValue) return;
+
+    const selStart = this.textarea.selectionStart;
+    const selEnd = this.textarea.selectionEnd;
+    this.textarea.value = newValue;
+
+    const d = this._diffOffsets(oldValue, newValue);
+    const shift = (pos) => {
+      if (pos <= d.start) return pos;
+      if (pos >= d.endOld) return pos + (d.endNew - d.endOld);
+      return d.endNew;
+    };
+    this.textarea.setSelectionRange(shift(selStart), shift(selEnd));
+
+    if (this._historyIndex === this._history.length - 1 && this._history.length) {
+      this._history[this._historyIndex].value = newValue;
+    }
+  }
+
+  /** Bracket the changed region between two strings. */
+  _diffOffsets(oldStr, newStr) {
+    let start = 0;
+    const minLen = Math.min(oldStr.length, newStr.length);
+    while (start < minLen && oldStr[start] === newStr[start]) start++;
+    let endOld = oldStr.length;
+    let endNew = newStr.length;
+    while (endOld > start && endNew > start && oldStr[endOld - 1] === newStr[endNew - 1]) {
+      endOld--;
+      endNew--;
+    }
+    return { start, endOld, endNew };
   }
 
   escapeHTML(str) {
