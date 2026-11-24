@@ -172,11 +172,30 @@ def ensure_upload_dir():
     os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
+def _apply_upload_mtime(path: str, mtime_ms, headers=None):
+    """Set a file's mtime from an epoch-milliseconds value (header or arg)."""
+    if mtime_ms is None and headers is not None:
+        raw = headers.get("x-file-mtime", "")
+        if raw:
+            try:
+                mtime_ms = float(raw)
+            except ValueError:
+                mtime_ms = None
+    if mtime_ms is None:
+        return
+    try:
+        ts = mtime_ms / 1000.0
+        os.utime(path, (ts, ts))
+    except OSError:
+        pass
+
+
 def handle_upload_chunk(headers, body: bytes) -> dict:
     upload_id = headers.get("x-upload-id", "")
     chunk_index_str = headers.get("x-chunk-index", "0")
     total_chunks_str = headers.get("x-total-chunks", "1")
     file_name_b64 = headers.get("x-file-name", "")
+    mtime_str = headers.get("x-file-mtime", "")
 
     if not upload_id or not file_name_b64:
         return {"error": "Missing upload headers"}, 400
@@ -192,6 +211,14 @@ def handle_upload_chunk(headers, body: bytes) -> dict:
     except ValueError:
         return {"error": "Invalid chunk index"}, 400
 
+    # Optional client-supplied mtime (epoch milliseconds) to preserve on disk.
+    mtime = None
+    if mtime_str:
+        try:
+            mtime = float(mtime_str)
+        except ValueError:
+            mtime = None
+
     ensure_upload_dir()
     chunk_dir = os.path.join(UPLOAD_DIR, upload_id)
     os.makedirs(chunk_dir, exist_ok=True)
@@ -205,6 +232,7 @@ def handle_upload_chunk(headers, body: bytes) -> dict:
         "total_chunks": total_chunks,
         "received": len(os.listdir(chunk_dir)),
         "chunk_dir": chunk_dir,
+        "mtime": mtime,
     }
 
     if chunk_index == total_chunks - 1:
@@ -236,7 +264,10 @@ def _finalize_upload(upload_id: str) -> dict:
                 shutil.copyfileobj(cf, out)
 
     shutil.rmtree(chunk_dir, ignore_errors=True)
+    mtime = meta.get("mtime")
     del UPLOADS[upload_id]
+
+    _apply_upload_mtime(target, mtime)
 
     rel = os.path.relpath(target, ROOT)
     posix_path = "/" + rel.replace(os.sep, "/") if rel != "." else "/"
@@ -256,7 +287,8 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
             "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type, Authorization, "
                                             "X-File-Name, X-Upload-Id, "
-                                            "X-Chunk-Index, X-Total-Chunks",
+                                            "X-Chunk-Index, X-Total-Chunks, "
+                                            "X-File-Mtime",
             "Access-Control-Max-Age": "86400",
         }
 
@@ -614,6 +646,7 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 with open(target, "wb") as f:
                     f.write(file_data)
+                _apply_upload_mtime(target, None, self.headers)
                 rel = os.path.relpath(target, ROOT)
                 posix_path = "/" + rel.replace(os.sep, "/") if rel != "." else "/"
                 self._send_json(200, {"success": True, "path": posix_path})

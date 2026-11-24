@@ -10,6 +10,8 @@ import os
 import sys
 import json
 import time
+import base64
+import uuid
 import argparse
 import ssl
 import urllib.request
@@ -30,6 +32,7 @@ def main():
     parser.add_argument("--backup-dir", default="./pdrive_backup", help="Local backup directory (default: ./pdrive_backup)")
     parser.add_argument("--ca-cert", help="Path to the PDrive CA certificate to trust (for self-signed HTTPS)")
     parser.add_argument("--insecure", action="store_true", help="Skip TLS certificate verification (not recommended)")
+    parser.add_argument("--yes", "-y", action="store_true", help="Upload locally-newer files without confirmation")
     args = parser.parse_args()
 
     if args.insecure:
@@ -57,20 +60,34 @@ def main():
     manifest = _build_manifest(backup_dir)
     print(f"  {len(manifest)} files tracked\n")
 
-    # Sync with server
+    # Fetch the server's current file listing
     print("Syncing metadata with server...")
     try:
-        modified, deleted = _sync(server, token, manifest)
+        server_files = _fetch_server_files(server, token)
     except Exception as e:
         print(f"Sync failed: {e}", file=sys.stderr)
         sys.exit(1)
-    print(f"  {len(modified)} to download, {len(deleted)} to remove\n")
+
+    to_download, to_upload, deleted = _diff_manifests(manifest, server_files)
+    print(f"  {len(to_download)} to download, {len(deleted)} to remove\n")
+
+    # Upload locally-newer files (only with confirmation)
+    if to_upload:
+        _warn_newer(to_upload)
+        if args.yes or _confirm(f"Upload {len(to_upload)} locally-newer file(s) to the server?"):
+            print("Uploading files:")
+            for entry in to_upload:
+                _upload_file(server, token, entry["path"], backup_dir)
+            print()
+        else:
+            print("  Skipped locally-newer files.\n")
 
     # Download modified/new files
-    if modified:
+    if to_download:
         print("Downloading files:")
-        for entry in modified:
-            _download_file(server, token, entry["path"], entry["size"], backup_dir)
+        for entry in to_download:
+            _download_file(server, token, entry["path"], entry["size"],
+                           entry.get("mtime"), backup_dir)
         print()
 
     # Remove deleted files
@@ -80,7 +97,7 @@ def main():
             _remove_local(backup_dir, path)
         print()
 
-    if not modified and not deleted:
+    if not to_download and not to_upload and not deleted:
         print("Already up to date!")
     else:
         print("Sync complete!")
@@ -126,7 +143,56 @@ def _sync(server, token, manifest):
     return data["modified"], data["deleted"]
 
 
-def _download_file(server, token, path, size, backup_dir):
+def _fetch_server_files(server, token):
+    modified, _deleted = _sync(server, token, {})
+    return {e["path"]: {"mtime": e["mtime"], "size": e["size"]} for e in modified}
+
+
+def _diff_manifests(client, server):
+    to_download = []
+    for path, info in server.items():
+        client_mtime = client.get(path)
+        if client_mtime is None or client_mtime < info["mtime"]:
+            to_download.append({"path": path, "size": info["size"], "mtime": info["mtime"]})
+
+    to_upload = []
+    for path, client_mtime in client.items():
+        info = server.get(path)
+        if info is not None and client_mtime > info["mtime"]:
+            to_upload.append({"path": path, "mtime": client_mtime})
+
+    deleted = [p for p in client if p not in server]
+    return to_download, to_upload, deleted
+
+
+def _warn_newer(entries):
+    yellow = "\033[33m"
+    reset = "\033[0m"
+    lines = [f"Warning: {len(entries)} local file(s) are newer than the server:"]
+    lines += [f"  ! {e['path']}" for e in entries]
+    print(f"{yellow}{chr(10).join(lines)}{reset}", file=sys.stderr)
+
+
+def _confirm(prompt):
+    try:
+        reply = input(f"{prompt} [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return reply in ("y", "yes")
+
+
+def _apply_mtime(path, mtime_ms):
+    if mtime_ms is None:
+        return
+    try:
+        ts = mtime_ms / 1000.0
+        os.utime(path, (ts, ts))
+    except OSError:
+        pass
+
+
+def _download_file(server, token, path, size, mtime, backup_dir):
     local_path = os.path.join(backup_dir, path.lstrip("/").replace("/", os.sep))
     os.makedirs(os.path.dirname(local_path), exist_ok=True)
 
@@ -151,6 +217,50 @@ def _download_file(server, token, path, size, backup_dir):
                             _progress(f"  ↓ {path} ({pct}%)", pct < 100)
         if last_pct < 100:
             print(f"  ↓ {path}")
+        _apply_mtime(local_path, mtime)
+    except Exception as e:
+        print(f"  ✗ {path} — {e}")
+
+
+def _upload_file(server, token, path, backup_dir):
+    local_path = os.path.join(backup_dir, path.lstrip("/").replace("/", os.sep))
+    try:
+        size = os.path.getsize(local_path)
+        mtime_ms = int(os.path.getmtime(local_path) * 1000)
+    except OSError as e:
+        print(f"  ✗ {path} — {e}")
+        return
+
+    upload_id = str(uuid.uuid4())
+    name_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
+    total_chunks = max(1, (size + CHUNK_SIZE - 1) // CHUNK_SIZE)
+
+    try:
+        with open(local_path, "rb") as f:
+            last_pct = -1
+            for i in range(total_chunks):
+                chunk = f.read(CHUNK_SIZE)
+                req = urllib.request.Request(
+                    f"{server}/api/files/upload",
+                    data=chunk,
+                    headers={
+                        "Content-Type": "application/octet-stream",
+                        "Authorization": f"Bearer {token}",
+                        "X-Upload-Id": upload_id,
+                        "X-Chunk-Index": str(i),
+                        "X-Total-Chunks": str(total_chunks),
+                        "X-File-Name": name_b64,
+                        "X-File-Mtime": str(mtime_ms),
+                    },
+                )
+                with urllib.request.urlopen(req, context=SSL_CONTEXT) as res:
+                    json.loads(res.read())
+                pct = (i + 1) * 100 // total_chunks
+                if pct != last_pct:
+                    last_pct = pct
+                    _progress(f"  ↑ {path} ({pct}%)", pct < 100)
+        if last_pct < 100:
+            print(f"  ↑ {path}")
     except Exception as e:
         print(f"  ✗ {path} — {e}")
 
