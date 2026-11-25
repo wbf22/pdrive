@@ -132,7 +132,7 @@ def list_directory(dir_path: str) -> list[dict]:
                     "name": name,
                     "isDirectory": is_dir,
                     "size": st.st_size,
-                    "mtime": st.st_mtime * 1000,
+                    "mtime": int(round(st.st_mtime * 1000)),
                     "path": posix_path,
                 })
             except OSError:
@@ -479,7 +479,7 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
 
         file_type, mime = guess_type(abs_path)
         file_size = os.path.getsize(abs_path)
-        mtime = os.path.getmtime(abs_path) * 1000
+        mtime = int(round(os.path.getmtime(abs_path) * 1000))
 
         MAX_READ_SIZE = 12 * 1024 * 1024
         if file_size > MAX_READ_SIZE:
@@ -669,7 +669,7 @@ class PDriveHandler(http.server.BaseHTTPRequestHandler):
                 rel = os.path.relpath(full, ROOT)
                 posix_path = "/" + rel.replace(os.sep, "/")
                 server_files[posix_path] = {
-                    "mtime": st.st_mtime * 1000,
+                    "mtime": int(round(st.st_mtime * 1000)),
                     "size": st.st_size,
                 }
 

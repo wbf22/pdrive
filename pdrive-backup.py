@@ -32,7 +32,8 @@ def main():
     parser.add_argument("--backup-dir", default="./pdrive_backup", help="Local backup directory (default: ./pdrive_backup)")
     parser.add_argument("--ca-cert", help="Path to the PDrive CA certificate to trust (for self-signed HTTPS)")
     parser.add_argument("--insecure", action="store_true", help="Skip TLS certificate verification (not recommended)")
-    parser.add_argument("--yes", "-y", action="store_true", help="Upload locally-newer files without confirmation")
+    parser.add_argument("--yes", "-y", action="store_true",
+                        help="Do not prompt: upload locally-newer files and delete server-removed files")
     args = parser.parse_args()
 
     if args.insecure:
@@ -69,7 +70,7 @@ def main():
         sys.exit(1)
 
     to_download, to_upload, deleted = _diff_manifests(manifest, server_files)
-    print(f"  {len(to_download)} to download, {len(deleted)} to remove\n")
+    print(f"  {len(to_download)} to download, {len(deleted)} deleted on server\n")
 
     # Upload locally-newer files (only with confirmation)
     if to_upload:
@@ -90,12 +91,22 @@ def main():
                            entry.get("mtime"), backup_dir)
         print()
 
-    # Remove deleted files
+    # Files deleted on the server: offer to re-upload, delete the rest.
     if deleted:
-        print("Removing deleted files:")
-        for path in deleted:
-            _remove_local(backup_dir, path)
-        print()
+        restore = [] if args.yes else _prompt_restore(deleted)
+
+        if restore:
+            print("Uploading restored files:")
+            for path in restore:
+                _upload_file(server, token, path, backup_dir)
+            print()
+
+        to_remove = [p for p in deleted if p not in set(restore)]
+        if to_remove:
+            print("Removing deleted files:")
+            for path in to_remove:
+                _remove_local(backup_dir, path)
+            print()
 
     if not to_download and not to_upload and not deleted:
         print("Already up to date!")
@@ -120,7 +131,7 @@ def _build_manifest(backup_dir):
         for name in files:
             full = os.path.join(root, name)
             try:
-                mtime = int(os.path.getmtime(full) * 1000)
+                mtime = int(round(os.path.getmtime(full) * 1000))
             except OSError:
                 continue
             rel = os.path.relpath(full, backup_dir)
@@ -145,7 +156,8 @@ def _sync(server, token, manifest):
 
 def _fetch_server_files(server, token):
     modified, _deleted = _sync(server, token, {})
-    return {e["path"]: {"mtime": e["mtime"], "size": e["size"]} for e in modified}
+    return {e["path"]: {"mtime": int(round(e["mtime"])), "size": e["size"]}
+            for e in modified}
 
 
 def _diff_manifests(client, server):
@@ -171,6 +183,39 @@ def _warn_newer(entries):
     lines = [f"Warning: {len(entries)} local file(s) are newer than the server:"]
     lines += [f"  ! {e['path']}" for e in entries]
     print(f"{yellow}{chr(10).join(lines)}{reset}", file=sys.stderr)
+
+
+def _prompt_restore(deleted):
+    """List files that were deleted on the server and let the user pick
+    which ones to upload back. Returns the chosen paths; the rest are removed.
+    """
+    print("These files exist locally but have been deleted on the server:")
+    for i, path in enumerate(deleted, 1):
+        print(f"  [{i}] {path}")
+    print()
+    print("Enter the numbers of files to UPLOAD back to the server,")
+    print("separated by spaces or commas (e.g. 1 3 5).")
+    print("Type 'a' to upload all, or press Enter to delete all.")
+    try:
+        reply = input("> ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return []
+
+    if not reply:
+        return []
+    if reply.lower() in ("a", "all", "*"):
+        return list(deleted)
+
+    chosen = set()
+    for token in reply.replace(",", " ").split():
+        try:
+            n = int(token)
+        except ValueError:
+            continue
+        if 1 <= n <= len(deleted):
+            chosen.add(deleted[n - 1])
+    return [p for p in deleted if p in chosen]
 
 
 def _confirm(prompt):
