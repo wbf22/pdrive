@@ -19,7 +19,7 @@ import urllib.error
 import urllib.parse
 import shutil
 
-CHUNK_SIZE = 8192
+CHUNK_SIZE = 16 * 1024 * 1024
 
 SSL_CONTEXT = None
 
@@ -271,7 +271,7 @@ def _upload_file(server, token, path, backup_dir):
     local_path = os.path.join(backup_dir, path.lstrip("/").replace("/", os.sep))
     try:
         size = os.path.getsize(local_path)
-        mtime_ms = int(os.path.getmtime(local_path) * 1000)
+        mtime_ms = int(round(os.path.getmtime(local_path) * 1000))
     except OSError as e:
         print(f"  ✗ {path} — {e}")
         return
